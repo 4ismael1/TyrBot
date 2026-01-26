@@ -1,0 +1,31 @@
+# Discord
+discord.py>=2.3.0
+jishaku>=2.5.0
+
+# Database
+motor>=3.3.0
+pymongo>=4.6.0
+redis>=5.0.0
+
+# HTTP & Async
+aiohttp>=3.9.0
+aiofiles>=23.2.0
+
+# Utilities
+python-dotenv>=1.0.0
+humanize>=4.9.0
+humanfriendly>=10.0
+colorama>=0.4.6
+orjson>=3.9.0
+
+# Image Processing
+Pillow>=10.0.0
+
+# Other
+psutil>=5.9.0
+# Web Dashboard
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+jinja2>=3.1.0
+python-multipart>=0.0.6
+pyjwt>=2.8.0
