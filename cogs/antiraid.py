@@ -114,35 +114,6 @@ class Antiraid(commands.Cog):
             del self._trusted_cache[guild_id]
         await cache.antiraid_invalidate(guild_id)
     
-    async def log_action(self, guild: discord.Guild, settings: dict, action: str, details: str):
-        """Enviar log de acción"""
-        if not settings.get("log_channel"):
-            return
-        
-        channel = guild.get_channel(settings["log_channel"])
-        if not channel:
-            return
-        
-        embed = discord.Embed(
-            title=f"🛡️ Antiraid - {action}",
-            description=details,
-            color=config.WARNING_COLOR,
-            timestamp=datetime.utcnow()
-        )
-        
-        # Mención de rol de alerta
-        alert_role_id = settings.get("alert_role")
-        content = None
-        if alert_role_id:
-            alert_role = guild.get_role(alert_role_id)
-            if alert_role:
-                content = alert_role.mention
-        
-        try:
-            await channel.send(content=content, embed=embed)
-        except discord.HTTPException:
-            pass
-    
     async def execute_penalty(self, member: discord.Member, settings: dict, reason: str, detection_type: str = "Actividad sospechosa") -> bool:
         """
         Ejecutar la penalidad configurada contra un miembro.
@@ -463,7 +434,7 @@ class Antiraid(commands.Cog):
         # Si es quarantine, verificar que existe el rol configurado
         if action == "quarantine":
             # Obtener rol de antinuke settings
-            antinuke_settings = await database.antinuke.find_one({"guild_id": ctx.guild.id})
+            antinuke_settings = await database.antinuke_servers.find_one({"guild_id": ctx.guild.id})
             quarantine_role_id = antinuke_settings.get("quarantine_role") if antinuke_settings else None
             
             if not quarantine_role_id:
@@ -976,7 +947,7 @@ class AntiraidPenaltySelect(discord.ui.Select):
         
         # Si es quarantine, verificar que existe el rol configurado
         if value == "quarantine":
-            antinuke_settings = await database.antinuke.find_one({"guild_id": self.parent_view.ctx.guild.id})
+            antinuke_settings = await database.antinuke_servers.find_one({"guild_id": self.parent_view.ctx.guild.id})
             quarantine_role_id = antinuke_settings.get("quarantine_role") if antinuke_settings else None
             
             if not quarantine_role_id:
