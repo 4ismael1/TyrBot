@@ -4,6 +4,7 @@ Cog Logging - Sistema de logs del servidor con panel interactivo
 
 from __future__ import annotations
 
+import asyncio
 import discord
 from discord.ext import commands
 from discord import ui
@@ -614,6 +615,32 @@ class Logging(commands.Cog):
                 await channel.send(embed=embed)
             except discord.HTTPException:
                 pass
+
+    async def _has_recent_case(self, guild_id: int, user_id: int, action: str, window_seconds: int = 15) -> bool:
+        """
+        Verifica si existe un caso reciente en modlogs.
+        Esto se usa para evitar duplicar logs de bans/unbans cuando el ban/unban lo ejecuta
+        el bot mediante comandos de moderación (donde ya se envía un log con "Caso #X").
+        """
+        try:
+            doc = await database.modlogs.find_one(
+                {"guild_id": guild_id, "target_id": user_id, "action": action},
+                sort=[("case_id", -1)]
+            )
+            if not doc:
+                return False
+
+            ts = doc.get("timestamp")
+            if not ts:
+                return False
+
+            now = datetime.utcnow()
+            if getattr(ts, "tzinfo", None) is not None:
+                ts = ts.replace(tzinfo=None)
+
+            return (now - ts).total_seconds() <= window_seconds
+        except Exception:
+            return False
     
     # === LISTENERS DE MENSAJES ===
     
@@ -1161,15 +1188,27 @@ class Logging(commands.Cog):
         embed.set_thumbnail(url=user.display_avatar.url)
         embed.add_field(name="Usuario", value=f"{user.mention}\n`{user.id}`", inline=True)
         
+        executor_id = None
         try:
             async for entry in guild.audit_logs(action=discord.AuditLogAction.ban, limit=1):
                 if entry.target.id == user.id:
+                    executor_id = getattr(entry.user, "id", None)
                     embed.add_field(name="Moderador", value=entry.user.mention, inline=True)
                     if entry.reason:
                         embed.add_field(name="Razón", value=entry.reason, inline=False)
                     break
         except:
             pass
+
+        # Evitar duplicado: si el ban lo ejecuta el bot mediante comandos de moderación,
+        # ya existe un log con "Caso #X" y este listener sería redundante.
+        bot_id = getattr(getattr(self.bot, "user", None), "id", None)
+        if executor_id and bot_id and executor_id == bot_id:
+            # Dar margen por posibles carreras entre el evento y la creación del caso en DB
+            for _ in range(3):
+                if await self._has_recent_case(guild.id, user.id, "ban"):
+                    return
+                await asyncio.sleep(0.4)
         
         await self.send_log(guild, "mod_ban", embed)
     
@@ -1184,13 +1223,24 @@ class Logging(commands.Cog):
         embed.set_author(name=str(user), icon_url=user.display_avatar.url)
         embed.add_field(name="Usuario", value=f"{user.mention}\n`{user.id}`", inline=True)
         
+        executor_id = None
         try:
             async for entry in guild.audit_logs(action=discord.AuditLogAction.unban, limit=1):
                 if entry.target.id == user.id:
+                    executor_id = getattr(entry.user, "id", None)
                     embed.add_field(name="Moderador", value=entry.user.mention, inline=True)
                     break
         except:
             pass
+
+        # Evitar duplicado: si el unban lo ejecuta el bot mediante comandos de moderación,
+        # ya existe un log con "Caso #X" y este listener sería redundante.
+        bot_id = getattr(getattr(self.bot, "user", None), "id", None)
+        if executor_id and bot_id and executor_id == bot_id:
+            for _ in range(3):
+                if await self._has_recent_case(guild.id, user.id, "unban"):
+                    return
+                await asyncio.sleep(0.4)
         
         await self.send_log(guild, "mod_unban", embed)
     
@@ -1475,3 +1525,4 @@ class Logging(commands.Cog):
 
 async def setup(bot: commands.Bot) -> None:
     await bot.add_cog(Logging(bot))
+
