@@ -360,7 +360,18 @@ class CustomHelp(commands.HelpCommand):
             value=(
                 f"`{ctx.clean_prefix}antinuke`  "
                 f"`{ctx.clean_prefix}antiraid`  "
-                f"`{ctx.clean_prefix}logs`"
+                f"`{ctx.clean_prefix}logs`  "
+                f"`{ctx.clean_prefix}whitelist`  "
+                f"`{ctx.clean_prefix}trusted`"
+            ),
+            inline=False
+        )
+
+        embed.add_field(
+            name="✅ Nota importante",
+            value=(
+                "Agrega a **whitelist** los bots, roles y usuarios que no quieres que el bot afecte.\n"
+                "Usa **trusted** para permitir que alguien configure Antinuke y Antiraid."
             ),
             inline=False
         )
@@ -382,6 +393,20 @@ class CustomHelp(commands.HelpCommand):
             description=f"Selecciona un módulo del menú de abajo para ver sus comandos.",
             color=config.BLURPLE_COLOR
         )
+
+        if category_name in ("🛡️ Seguridad", "Seguridad"):
+            embed.add_field(
+                name="🚀 Comandos clave",
+                value=(
+                    f"`{ctx.clean_prefix}whitelist`  "
+                    f"`{ctx.clean_prefix}whitelist add @usuario`  "
+                    f"`{ctx.clean_prefix}whitelist role add @rol`\n"
+                    f"`{ctx.clean_prefix}trusted`  "
+                    f"`{ctx.clean_prefix}trusted add @usuario`  "
+                    f"`{ctx.clean_prefix}trusted remove @usuario`"
+                ),
+                inline=False
+            )
         
         # Listar módulos como tarjetas separadas
         for cog in cogs_list:
