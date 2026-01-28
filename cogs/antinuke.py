@@ -253,6 +253,27 @@ class Antinuke(commands.Cog):
         self._trusted_cache[guild_id] = trusted
         return user_id in trusted
 
+    async def _get_audit_entry(
+        self,
+        guild: discord.Guild,
+        action: AuditLogAction
+    ) -> Optional[discord.AuditLogEntry]:
+        """Leer una sola entrada del Audit Log sin lanzar errores."""
+        if not guild:
+            return None
+
+        me = guild.me or guild.get_member(self.bot.user.id)
+        if not me or not me.guild_permissions.view_audit_log:
+            return None
+
+        try:
+            async for entry in guild.audit_logs(action=action, limit=1):
+                return entry
+        except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+            return None
+
+        return None
+
     def resolve_punishment_for_action(self, settings: dict, action: AntinukeAction) -> Punishment:
         """
         Resolver castigo para una acciÃ³n:
@@ -505,14 +526,15 @@ class Antinuke(commands.Cog):
     async def on_member_ban(self, guild: discord.Guild, user: discord.User):
         """Detectar baneos masivos"""
         # Obtener el responsable del audit log
-        async for entry in guild.audit_logs(action=AuditLogAction.ban, limit=1):
-            if entry.target.id == user.id:
-                await self.check_and_punish(
-                    guild, 
-                    entry.user.id, 
-                    AntinukeAction.BAN_MEMBERS
-                )
-                break
+        entry = await self._get_audit_entry(guild, AuditLogAction.ban)
+        if not entry or entry.target.id != user.id:
+            return
+
+        await self.check_and_punish(
+            guild,
+            entry.user.id,
+            AntinukeAction.BAN_MEMBERS
+        )
 
     @commands.Cog.listener()
     async def on_member_remove(self, member: discord.Member):
@@ -520,106 +542,115 @@ class Antinuke(commands.Cog):
         guild = member.guild
 
         # Verificar si fue kick (no ban ni salida voluntaria)
-        async for entry in guild.audit_logs(action=AuditLogAction.kick, limit=1):
-            if entry.target.id == member.id:
-                # Verificar que fue reciente (últimos 5 segundos)
-                if (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).seconds < 5:
-                    await self.check_and_punish(
-                        guild,
-                        entry.user.id,
-                        AntinukeAction.KICK_MEMBERS
-                    )
-                break
+        entry = await self._get_audit_entry(guild, AuditLogAction.kick)
+        if not entry or entry.target.id != member.id:
+            return
+
+        # Verificar que fue reciente (últimos 5 segundos)
+        if (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).seconds < 5:
+            await self.check_and_punish(
+                guild,
+                entry.user.id,
+                AntinukeAction.KICK_MEMBERS
+            )
 
     @commands.Cog.listener()
     async def on_guild_channel_create(self, channel: discord.abc.GuildChannel):
         """Detectar creación masiva de canales"""
-        async for entry in channel.guild.audit_logs(action=AuditLogAction.channel_create, limit=1):
-            if entry.target.id == channel.id:
-                punished = await self.check_and_punish(
-                    channel.guild,
-                    entry.user.id,
-                    AntinukeAction.CREATE_CHANNELS
-                )
+        entry = await self._get_audit_entry(channel.guild, AuditLogAction.channel_create)
+        if not entry or entry.target.id != channel.id:
+            return
 
-                # Si se castigó, revertir la acción (eliminar el canal)
-                if punished:
-                    settings = await self.get_settings(channel.guild.id)
-                    if settings.get("revert_actions", True):
-                        try:
-                            await channel.delete(reason="Antinuke: Revirtiendo canal creado maliciosamente")
-                        except discord.HTTPException:
-                            pass
-                break
+        punished = await self.check_and_punish(
+            channel.guild,
+            entry.user.id,
+            AntinukeAction.CREATE_CHANNELS
+        )
+
+        # Si se castigó, revertir la acción (eliminar el canal)
+        if punished:
+            settings = await self.get_settings(channel.guild.id)
+            if settings.get("revert_actions", True):
+                try:
+                    await channel.delete(reason="Antinuke: Revirtiendo canal creado maliciosamente")
+                except discord.HTTPException:
+                    pass
 
     @commands.Cog.listener()
     async def on_guild_channel_delete(self, channel: discord.abc.GuildChannel):
         """Detectar eliminación masiva de canales"""
-        async for entry in channel.guild.audit_logs(action=AuditLogAction.channel_delete, limit=1):
-            await self.check_and_punish(
-                channel.guild,
-                entry.user.id,
-                AntinukeAction.DELETE_CHANNELS
-            )
-            break
+        entry = await self._get_audit_entry(channel.guild, AuditLogAction.channel_delete)
+        if not entry:
+            return
+
+        await self.check_and_punish(
+            channel.guild,
+            entry.user.id,
+            AntinukeAction.DELETE_CHANNELS
+        )
 
     @commands.Cog.listener()
     async def on_guild_role_create(self, role: discord.Role):
         """Detectar creación masiva de roles"""
-        async for entry in role.guild.audit_logs(action=AuditLogAction.role_create, limit=1):
-            if entry.target.id == role.id:
-                punished = await self.check_and_punish(
-                    role.guild,
-                    entry.user.id,
-                    AntinukeAction.CREATE_ROLES
-                )
+        entry = await self._get_audit_entry(role.guild, AuditLogAction.role_create)
+        if not entry or entry.target.id != role.id:
+            return
 
-                # Si se castigó, revertir la acción (eliminar el rol)
-                if punished:
-                    settings = await self.get_settings(role.guild.id)
-                    if settings.get("revert_actions", True):
-                        try:
-                            await role.delete(reason="Antinuke: Revirtiendo rol creado maliciosamente")
-                        except discord.HTTPException:
-                            pass
-                break
+        punished = await self.check_and_punish(
+            role.guild,
+            entry.user.id,
+            AntinukeAction.CREATE_ROLES
+        )
+
+        # Si se castigó, revertir la acción (eliminar el rol)
+        if punished:
+            settings = await self.get_settings(role.guild.id)
+            if settings.get("revert_actions", True):
+                try:
+                    await role.delete(reason="Antinuke: Revirtiendo rol creado maliciosamente")
+                except discord.HTTPException:
+                    pass
 
     @commands.Cog.listener()
     async def on_guild_role_delete(self, role: discord.Role):
         """Detectar eliminación masiva de roles"""
-        async for entry in role.guild.audit_logs(action=AuditLogAction.role_delete, limit=1):
-            await self.check_and_punish(
-                role.guild,
-                entry.user.id,
-                AntinukeAction.DELETE_ROLES
-            )
-            break
+        entry = await self._get_audit_entry(role.guild, AuditLogAction.role_delete)
+        if not entry:
+            return
+
+        await self.check_and_punish(
+            role.guild,
+            entry.user.id,
+            AntinukeAction.DELETE_ROLES
+        )
 
     @commands.Cog.listener()
     async def on_webhooks_update(self, channel: discord.TextChannel):
         """Detectar creación masiva de webhooks"""
-        async for entry in channel.guild.audit_logs(action=AuditLogAction.webhook_create, limit=1):
-            # Verificar que fue reciente
-            if (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).seconds < 5:
-                punished = await self.check_and_punish(
-                    channel.guild,
-                    entry.user.id,
-                    AntinukeAction.CREATE_WEBHOOKS
-                )
+        entry = await self._get_audit_entry(channel.guild, AuditLogAction.webhook_create)
+        if not entry:
+            return
 
-                # Si se castigó, revertir la acción (eliminar el webhook)
-                if punished:
-                    settings = await self.get_settings(channel.guild.id)
-                    if settings.get("revert_actions", True):
-                        try:
-                            webhooks = await channel.webhooks()
-                            for webhook in webhooks:
-                                if webhook.id == entry.target.id:
-                                    await webhook.delete(reason="Antinuke: Revirtiendo webhook creado maliciosamente")
-                                    break
-                        except discord.HTTPException:
-                            pass
-            break
+        # Verificar que fue reciente
+        if (datetime.utcnow() - entry.created_at.replace(tzinfo=None)).seconds < 5:
+            punished = await self.check_and_punish(
+                channel.guild,
+                entry.user.id,
+                AntinukeAction.CREATE_WEBHOOKS
+            )
+
+            # Si se castigó, revertir la acción (eliminar el webhook)
+            if punished:
+                settings = await self.get_settings(channel.guild.id)
+                if settings.get("revert_actions", True):
+                    try:
+                        webhooks = await channel.webhooks()
+                        for webhook in webhooks:
+                            if webhook.id == entry.target.id:
+                                await webhook.delete(reason="Antinuke: Revirtiendo webhook creado maliciosamente")
+                                break
+                    except discord.HTTPException:
+                        pass
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message):
@@ -686,41 +717,42 @@ class Antinuke(commands.Cog):
             return
 
         # Verificar quién añadió el bot
-        async for entry in member.guild.audit_logs(action=AuditLogAction.bot_add, limit=1):
-            if entry.target.id == member.id:
-                user_id = entry.user.id
-                adder = member.guild.get_member(user_id)
+        entry = await self._get_audit_entry(member.guild, AuditLogAction.bot_add)
+        if not entry or entry.target.id != member.id:
+            return
 
-                # SOLO whitelist y owner pueden añadir bots sin consecuencias
-                # Los trusted NO están exentos de esto
-                if await self.is_whitelisted(member.guild.id, user_id, adder):
-                    return
-                if user_id == member.guild.owner_id:
-                    return
+        user_id = entry.user.id
+        adder = member.guild.get_member(user_id)
 
-                # Expulsar el bot
-                try:
-                    await member.kick(reason="Antinuke: Bot no autorizado")
-                except discord.HTTPException:
-                    pass
+        # SOLO whitelist y owner pueden añadir bots sin consecuencias
+        # Los trusted NO están exentos de esto
+        if await self.is_whitelisted(member.guild.id, user_id, adder):
+            return
+        if user_id == member.guild.owner_id:
+            return
 
-                # Castigar al que añadió el bot (incluso si es trusted)
-                # Para add_bot, el límite es 1, así que siempre castiga
-                if adder and adder.top_role < member.guild.me.top_role:
-                    punishment = self.resolve_punishment_for_action(settings, AntinukeAction.ADD_BOT)
-                    punishment = self.adjust_punishment_for_bot(settings, adder, punishment)
-                    success = await self.execute_punishment(
-                        member.guild, adder, AntinukeAction.ADD_BOT, punishment
-                    )
-                    await self.log_action(
-                        member.guild, adder, AntinukeAction.ADD_BOT, punishment.value, success
-                    )
-                else:
-                    # Si no podemos castigar, al menos logueamos
-                    await self.log_action(
-                        member.guild, adder or member, AntinukeAction.ADD_BOT, "N/A", False
-                    )
-                break
+        # Expulsar el bot
+        try:
+            await member.kick(reason="Antinuke: Bot no autorizado")
+        except discord.HTTPException:
+            pass
+
+        # Castigar al que añadió el bot (incluso si es trusted)
+        # Para add_bot, el límite es 1, así que siempre castiga
+        if adder and adder.top_role < member.guild.me.top_role:
+            punishment = self.resolve_punishment_for_action(settings, AntinukeAction.ADD_BOT)
+            punishment = self.adjust_punishment_for_bot(settings, adder, punishment)
+            success = await self.execute_punishment(
+                member.guild, adder, AntinukeAction.ADD_BOT, punishment
+            )
+            await self.log_action(
+                member.guild, adder, AntinukeAction.ADD_BOT, punishment.value, success
+            )
+        else:
+            # Si no podemos castigar, al menos logueamos
+            await self.log_action(
+                member.guild, adder or member, AntinukeAction.ADD_BOT, "N/A", False
+            )
 
     # ========== Commands ==========
 

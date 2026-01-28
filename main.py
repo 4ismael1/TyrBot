@@ -17,6 +17,7 @@ from typing import Optional
 
 import discord
 from aiohttp import ClientSession, TCPConnector
+from discord import app_commands
 from discord.ext import commands
 from colorama import Fore, init as colorama_init
 
@@ -80,6 +81,8 @@ class TyrBot(commands.AutoShardedBot):
 
         # Check global de licencias
         self.add_check(self._license_check)
+        # Check global para slash commands (discord.py 2.6 usa interaction_check)
+        self.tree.interaction_check = self._license_check_interaction
         
         # Cooldown global
         self.global_cooldown = commands.CooldownMapping.from_cooldown(
@@ -176,6 +179,79 @@ class TyrBot(commands.AutoShardedBot):
         except discord.HTTPException:
             pass
         raise commands.CheckFailure("LICENSE_REQUIRED")
+
+    async def _license_check_interaction(self, interaction: discord.Interaction) -> bool:
+        """Bloquear comandos slash si el servidor no tiene licencia"""
+        if interaction.guild is None:
+            if interaction.response.is_done():
+                await interaction.followup.send(
+                    "Este comando solo se puede usar en servidores.",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "Este comando solo se puede usar en servidores.",
+                    ephemeral=True
+                )
+            return False
+
+        if interaction.user and interaction.user.id in self.owner_ids:
+            return True
+
+        if interaction.command is None:
+            return True
+
+        command_name = getattr(interaction.command, "qualified_name", interaction.command.name)
+        root = command_name.split(" ")[0] if command_name else interaction.command.name
+        if root in self.allowed_no_license_commands:
+            return True
+
+        binding = getattr(interaction.command, "binding", None)
+        if binding:
+            cog_name = binding.qualified_name if hasattr(binding, "qualified_name") else binding.__class__.__name__
+            if cog_name in self.allowed_no_license_cogs:
+                return True
+
+        licensed = await self.license_manager.is_licensed(interaction.guild.id)
+        if licensed:
+            return True
+
+        prefix = await cache.get_prefix(interaction.guild.id)
+        if not prefix:
+            prefix = config.DEFAULT_PREFIX
+
+        embed = discord.Embed(
+            title="🔒 Licencia requerida",
+            description=(
+                "Este servidor no tiene una licencia activa para usar el bot.\n"
+                "Para continuar, canjea una licencia o contacta al desarrollador."
+            ),
+            color=config.ERROR_COLOR
+        )
+        embed.add_field(
+            name="✅ Canjear licencia",
+            value=f"`{prefix}license redeem <key>`",
+            inline=False
+        )
+        embed.add_field(
+            name="ℹ️ Estado",
+            value=f"`{prefix}license status`",
+            inline=False
+        )
+        embed.add_field(
+            name="📬 Contacto",
+            value="Ismael (Discord: 4.hz)",
+            inline=False
+        )
+
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+        except discord.HTTPException:
+            pass
+        return False
     
     async def setup_hook(self) -> None:
         """Configuración inicial del bot"""
@@ -394,6 +470,23 @@ class TyrBot(commands.AutoShardedBot):
         
         # Error no manejado - log
         logger.error(f"Error en comando {ctx.command}: {error}", exc_info=error)
+
+    async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError) -> None:
+        """Manejador global de errores para slash commands"""
+        if isinstance(error, app_commands.CheckFailure):
+            if str(error) in ("LICENSE_REQUIRED", "GUILD_ONLY"):
+                return
+            if not interaction.response.is_done():
+                try:
+                    await interaction.response.send_message(
+                        "❌ No tienes permiso para usar este comando.",
+                        ephemeral=True
+                    )
+                except discord.HTTPException:
+                    pass
+            return
+
+        logger.error(f"Error en slash command: {error}", exc_info=error)
     
     async def close(self) -> None:
         """Cerrar conexiones al apagar el bot"""

@@ -7,6 +7,7 @@ from __future__ import annotations
 import discord
 from discord.ext import commands
 from typing import Optional, List, Mapping, Any
+import re
 
 from config import config
 from utils import PaginatorView
@@ -184,9 +185,72 @@ class HelpView(discord.ui.View):
 class CustomHelp(commands.HelpCommand):
     """Sistema de ayuda personalizado"""
 
+    def _clean_cog_description(self, text: Optional[str]) -> str:
+        """Quitar emojis repetidos al inicio de la descripcion"""
+        if not text:
+            return "Sin descripción"
+        cleaned = text.strip()
+        # Si el primer token es solo simbolos/emoji, removerlo
+        parts = cleaned.split()
+        if parts:
+            first = parts[0]
+            if all(not ch.isalnum() for ch in first):
+                cleaned = " ".join(parts[1:]).strip()
+        cleaned = re.sub(r"^[^\\w]+\\s*", "", cleaned, flags=re.UNICODE)
+        return cleaned or "Sin descripción"
+
+    def _shorten_text(self, text: str, max_len: int = 90) -> str:
+        """Acortar textos largos para embeds"""
+        if len(text) <= max_len:
+            return text
+        return text[: max_len - 3].rstrip() + "..."
+
+    def _is_owner_only_check(self, command: commands.Command) -> bool:
+        """Detectar checks de is_owner en el comando"""
+        for check in getattr(command, "checks", []):
+            qualname = getattr(check, "__qualname__", "")
+            if "is_owner.<locals>.predicate" in qualname:
+                return True
+        return False
+
+    def _is_hidden_command(self, command: commands.Command) -> bool:
+        """Determinar si un comando debe ocultarse en el help"""
+        if command.hidden:
+            return True
+
+        extras = getattr(command, "extras", {}) or {}
+        if extras.get("hidden") or extras.get("owner_only"):
+            return True
+
+        # Ocultar comandos owner-only por check
+        if self._is_owner_only_check(command):
+            return True
+
+        # Si el padre/grupo es oculto u owner-only, ocultar subcomandos
+        parent = getattr(command, "parent", None)
+        while parent:
+            if parent.hidden:
+                return True
+            parent_extras = getattr(parent, "extras", {}) or {}
+            if parent_extras.get("hidden") or parent_extras.get("owner_only"):
+                return True
+            if self._is_owner_only_check(parent):
+                return True
+            parent = getattr(parent, "parent", None)
+
+        # Ocultar cogs completos (Owner o marcados como hidden)
+        cog = command.cog
+        if cog:
+            if getattr(cog, "__cog_hidden__", False) or getattr(cog, "hidden", False):
+                return True
+            if getattr(cog, "qualified_name", "") == "Owner":
+                return True
+
+        return False
+
     def _get_visible_commands(self, cog: commands.Cog) -> list[commands.Command]:
         """Obtener todos los comandos visibles (incluye subcomandos)"""
-        return [c for c in cog.walk_commands() if not c.hidden]
+        return [c for c in cog.walk_commands() if not self._is_hidden_command(c)]
 
     def _get_command_desc(self, command: commands.Command, max_len: int = 70) -> str:
         """Descripción corta y limpia para un comando"""
@@ -256,56 +320,54 @@ class CustomHelp(commands.HelpCommand):
         bot = ctx.bot
         
         # Contar comandos
-        total_commands = len(set(bot.walk_commands()))
-        total_cogs = len([c for c in bot.cogs.values() if any(not cmd.hidden for cmd in c.walk_commands())])
+        visible_commands = [cmd for cmd in bot.walk_commands() if not self._is_hidden_command(cmd)]
+        total_commands = len(set(visible_commands))
+        total_cogs = len([c for c in bot.cogs.values() if any(not self._is_hidden_command(cmd) for cmd in c.walk_commands())])
         
         embed = discord.Embed(
             title="📚 Centro de Ayuda",
             description=(
-                f"¡Hola **{ctx.author.display_name}**! Soy **{bot.user.name}**, "
-                f"un bot multipropósito para Discord.\n\n"
-                f"**Prefijo actual:** `{ctx.clean_prefix}`\n"
-                f"**Comandos:** {total_commands}\n"
-                f"**Módulos:** {total_cogs}\n\n"
-                f"**Navegación:**\n"
-                f"• Usa el menú de categorías abajo\n"
-                f"• `{ctx.clean_prefix}help <comando>` - Info de un comando\n"
-                f"• `{ctx.clean_prefix}help <módulo>` - Info de un módulo"
+                f"Hola **{ctx.author.display_name}**. Soy **{bot.user.name}**.\n"
+                "Usa el menú para explorar módulos y ver sus comandos."
             ),
             color=config.BLURPLE_COLOR
         )
         
-        # Comandos destacados/nuevos
+        # Resumen rápido
         embed.add_field(
-            name="⭐ Comandos Destacados",
+            name="✅ Resumen",
             value=(
-                f"**📋 Casos:** `{ctx.clean_prefix}case` `{ctx.clean_prefix}case edit` `{ctx.clean_prefix}history`\n"
-                f"**🛡️ Antinuke:** `{ctx.clean_prefix}antinuke` `{ctx.clean_prefix}antinuke punishment` `{ctx.clean_prefix}antinuke botkick`\n"
-                f"**⚔️ Mod:** `{ctx.clean_prefix}kick` `{ctx.clean_prefix}ban` `{ctx.clean_prefix}warn` `{ctx.clean_prefix}massban`\n"
-                f"**🎭 FakePerms:** `{ctx.clean_prefix}fp grant` `{ctx.clean_prefix}fp edit` `{ctx.clean_prefix}fp check`\n"
-                f"**📝 Logs:** `{ctx.clean_prefix}logs` `{ctx.clean_prefix}logs category`"
+                f"**Prefijo:** `{ctx.clean_prefix}`\n"
+                f"**Comandos:** {total_commands}\n"
+                f"**Módulos:** {total_cogs}"
             ),
             inline=False
         )
         
-        # Organizar por categorías
-        categories = self._organize_cogs_by_category()
-        
-        # Mostrar resumen de categorías
-        category_lines = []
-        for category_name, cogs_list in categories.items():
-            total_cmds = sum(len(self._get_visible_commands(cog)) for cog in cogs_list)
-            category_lines.append(f"{category_name} — {len(cogs_list)} módulos, {total_cmds} comandos")
-        
         embed.add_field(
-            name="📂 Categorías Disponibles",
-            value="\n".join(category_lines) if category_lines else "Sin categorías",
+            name="📌 Cómo usar la ayuda",
+            value=(
+                f"• Menú de categorías para navegar\n"
+                f"• `{ctx.clean_prefix}help <comando>` — detalles de un comando\n"
+                f"• `{ctx.clean_prefix}help <módulo>` — comandos de un módulo"
+            ),
+            inline=False
+        )
+
+        # Accesos rápidos mínimos
+        embed.add_field(
+            name="⚡ Atajos útiles",
+            value=(
+                f"`{ctx.clean_prefix}antinuke`  "
+                f"`{ctx.clean_prefix}antiraid`  "
+                f"`{ctx.clean_prefix}logs`"
+            ),
             inline=False
         )
         
         embed.set_thumbnail(url=bot.user.display_avatar.url)
         embed.set_footer(
-            text=f"Solicitado por {ctx.author} • Usa el menú para navegar",
+            text=f"Solicitado por {ctx.author}",
             icon_url=ctx.author.display_avatar.url
         )
         
@@ -321,24 +383,22 @@ class CustomHelp(commands.HelpCommand):
             color=config.BLURPLE_COLOR
         )
         
-        # Listar módulos de esta categoría
+        # Listar módulos como tarjetas separadas
         for cog in cogs_list:
             emoji = getattr(cog, "emoji", "📁")
             cmds = self._get_visible_commands(cog)
-            
+            clean_desc = self._clean_cog_description(cog.description)
+            clean_desc = self._shorten_text(clean_desc, max_len=90)
+
             embed.add_field(
                 name=f"{emoji} {cog.qualified_name}",
-                value=(
-                    f"{cog.description or 'Sin descripción'}\n"
-                    f"**Comandos:** {len(cmds)}\n"
-                    "Usa el menú de módulos para ver la lista completa."
-                ),
-                inline=False
+                value=f"{clean_desc}\n**Comandos:** {len(cmds)}",
+                inline=True
             )
-        
+
         total_cmds = sum(len(self._get_visible_commands(cog)) for cog in cogs_list)
         embed.set_footer(
-            text=f"{len(cogs_list)} módulos, {total_cmds} comandos en esta categoría"
+            text=f"{len(cogs_list)} módulos, {total_cmds} comandos en esta categoría • Usa el menú de módulos para ver la lista completa"
         )
         
         return embed
@@ -525,7 +585,7 @@ class CustomHelp(commands.HelpCommand):
         if isinstance(command, commands.Group):
             subcommands = []
             for c in sorted(command.commands, key=lambda x: x.name):
-                if c.hidden:
+                if self._is_hidden_command(c):
                     continue
                 brief = self._get_command_desc(c)
                 subcommands.append(f"• `{ctx.clean_prefix}{c.qualified_name}` — {brief}")
@@ -560,11 +620,17 @@ class CustomHelp(commands.HelpCommand):
     
     async def send_command_help(self, command: commands.Command) -> None:
         """Enviar ayuda de un comando"""
+        if self._is_hidden_command(command):
+            await self.send_error_message("Comando no encontrado.")
+            return
         embed = self.get_command_embed(command)
         await self.get_destination().send(embed=embed)
     
     async def send_group_help(self, group: commands.Group) -> None:
         """Enviar ayuda de un grupo de comandos"""
+        if self._is_hidden_command(group):
+            await self.send_error_message("Comando no encontrado.")
+            return
         embed = self.get_command_embed(group)
         await self.get_destination().send(embed=embed)
     

@@ -38,6 +38,41 @@ class Licensing(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
+    async def _resolve_owner(self, guild_id: int, guild: Optional[discord.Guild] = None) -> Optional[discord.User]:
+        if guild is None:
+            guild = self.bot.get_guild(guild_id)
+        if guild:
+            if guild.owner:
+                return guild.owner
+            owner_id = guild.owner_id
+        else:
+            owner_id = None
+            try:
+                fetched = await self.bot.fetch_guild(guild_id)
+                owner_id = fetched.owner_id
+            except (discord.Forbidden, discord.NotFound, discord.HTTPException):
+                return None
+        if not owner_id:
+            return None
+        try:
+            return await self.bot.fetch_user(owner_id)
+        except discord.HTTPException:
+            return None
+
+    async def _send_owner_notice(
+        self,
+        guild_id: int,
+        embed: discord.Embed,
+        guild: Optional[discord.Guild] = None
+    ) -> None:
+        owner = await self._resolve_owner(guild_id, guild)
+        if not owner:
+            return
+        try:
+            await owner.send(embed=embed)
+        except discord.HTTPException:
+            pass
+
     @commands.group(
         name="license",
         aliases=["licencia", "licence"],
@@ -68,7 +103,39 @@ class Licensing(commands.Cog):
         if ok and status == "already":
             return await ctx.send(embed=warning_embed("Este servidor ya tiene esta licencia activa."))
         if ok:
-            return await ctx.send(embed=success_embed("Licencia activada correctamente."))
+            await ctx.send(embed=success_embed("Licencia activada correctamente."))
+
+            guild_name = ctx.guild.name if ctx.guild else "tu servidor"
+            prefix = ctx.clean_prefix
+            dm_embed = discord.Embed(
+                title="Licencia activada",
+                description=(
+                    f"La licencia fue activada en **{guild_name}**.\n"
+                    "Ya puedes usar los comandos normalmente."
+                ),
+                color=config.SUCCESS_COLOR
+            )
+            dm_embed.add_field(
+                name="Recomendaciones",
+                value=(
+                    f"- Revisa el panel de Antinuke: `{prefix}antinuke`\n"
+                    f"- Revisa el panel de Antiraid: `{prefix}antiraid`\n"
+                    f"- Configura logs: `{prefix}logs`"
+                ),
+                inline=False
+            )
+            dm_embed.add_field(
+                name="Whitelist",
+                value="Agrega bots y roles confiables a la whitelist para evitar falsos castigos.",
+                inline=False
+            )
+            dm_embed.add_field(
+                name="Estado",
+                value=f"Usa `{prefix}license status` para ver el estado de la licencia.",
+                inline=False
+            )
+            await self._send_owner_notice(ctx.guild.id, dm_embed, guild=ctx.guild)
+            return
         if status == "invalid":
             return await ctx.send(embed=error_embed("Licencia inválida."))
         if status == "revoked":
@@ -129,6 +196,30 @@ class Licensing(commands.Cog):
         guild_id = doc.get("guild_id")
         extra = f"Guild: `{guild_id}`" if guild_id else "Guild: N/A"
         await ctx.send(embed=success_embed(f"Licencia revocada. {extra}"))
+
+        if guild_id:
+            guild = self.bot.get_guild(guild_id)
+            guild_name = guild.name if guild else "tu servidor"
+            dm_embed = discord.Embed(
+                title="Licencia revocada",
+                description=(
+                    f"La licencia de **{guild_name}** fue revocada.\n"
+                    "Por seguridad, los modulos de proteccion siguen activos, "
+                    "pero los comandos quedan bloqueados hasta canjear una nueva licencia."
+                ),
+                color=config.ERROR_COLOR
+            )
+            dm_embed.add_field(
+                name="Accion requerida",
+                value="Canjea una nueva licencia para recuperar el acceso a los comandos.",
+                inline=False
+            )
+            dm_embed.add_field(
+                name="Contacto",
+                value="Ismael (Discord: 4.hz)",
+                inline=False
+            )
+            await self._send_owner_notice(guild_id, dm_embed, guild=guild)
 
     @license.command(name="info")
     @is_owner()
