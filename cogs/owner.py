@@ -15,7 +15,7 @@ from contextlib import redirect_stdout
 
 from config import config
 from core import database, cache
-from utils import success_embed, error_embed, warning_embed
+from utils import success_embed, error_embed, warning_embed, paginate
 
 
 class Owner(commands.Cog):
@@ -45,83 +45,92 @@ class Owner(commands.Cog):
     async def owner_help(self, ctx: commands.Context):
         """Ayuda exclusiva para el owner"""
         p = ctx.clean_prefix
-        embed = discord.Embed(
-            title="🔐 Owner Help",
-            description="Comandos exclusivos del owner. Úsalos con cuidado.",
-            color=config.BLURPLE_COLOR
-        )
 
-        embed.add_field(
-            name="🧪 Dev",
-            value=(
-                f"`{p}eval <codigo>` — Ejecuta código Python en el bot.\n"
-                "Útil para pruebas rápidas y depuración."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🧩 Extensiones",
-            value=(
-                f"`{p}load <cog>` — Carga un cog.\n"
-                f"`{p}unload <cog>` — Descarga un cog.\n"
-                f"`{p}reload [cog]` — Recarga un cog o todos si no pasas nada."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🧭 Servidores",
-            value=(
-                f"`{p}guilds` — Lista servidores donde está el bot.\n"
-                f"`{p}leave <guild_id>` — Saca el bot de un servidor."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="👥 Usuarios",
-            value=(
-                f"`{p}blacklist <usuario>` — Agrega o quita de la blacklist.\n"
-                f"`{p}blacklisted` — Muestra la lista de bloqueados.\n"
-                f"`{p}dm <usuario> <mensaje>` — Envía un DM."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="📣 Mensajes y estado",
-            value=(
-                f"`{p}say <#canal> <mensaje>` — Envía un mensaje.\n"
-                f"`{p}status <tipo> <texto>` — Cambia el estado del bot.\n"
-                f"Tipos: playing, watching, listening, streaming, competing."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🗃️ Datos y cache",
-            value=(
-                f"`{p}sql <query>` — Ejecuta un find en MongoDB (solo find).\n"
-                f"`{p}clearcache [patrón]` — Limpia cache de Redis.\n"
-                f"`{p}cacheinfo` — Info de Redis."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="🔧 Slash",
-            value=(
-                f"`{p}sync` — Sincroniza slash global.\n"
-                f"`{p}sync guild` — Sincroniza solo en este servidor.\n"
-                f"`{p}sync clear` / `{p}sync clearguild` — Limpia y sincroniza."
-            ),
-            inline=False
-        )
-        embed.add_field(
-            name="⚡ Control",
-            value=(
-                f"`{p}shutdown` — Apaga el bot.\n"
-                f"`{p}restart` — Reinicia el proceso."
-            ),
-            inline=False
-        )
+        def is_owner_check(cmd: commands.Command) -> bool:
+            for check in getattr(cmd, "checks", []):
+                qualname = getattr(check, "__qualname__", "")
+                if "is_owner.<locals>.predicate" in qualname:
+                    return True
+            return False
 
-        await ctx.send(embed=embed)
+        def is_owner_only(cmd: commands.Command) -> bool:
+            # Comandos dentro del cog Owner siempre son owner-only
+            if cmd.cog and cmd.cog.qualified_name == "Owner":
+                return True
+
+            extras = getattr(cmd, "extras", {}) or {}
+            if extras.get("owner_only"):
+                return True
+
+            if is_owner_check(cmd):
+                return True
+
+            parent = getattr(cmd, "parent", None)
+            while parent:
+                if is_owner_check(parent):
+                    return True
+                parent_extras = getattr(parent, "extras", {}) or {}
+                if parent_extras.get("owner_only"):
+                    return True
+                parent = getattr(parent, "parent", None)
+
+            return False
+
+        def format_cmd(cmd: commands.Command) -> str:
+            desc = cmd.brief or cmd.short_doc or cmd.help or "Sin descripción"
+            desc = desc.strip().splitlines()[0]
+            alias_text = ""
+            if cmd.aliases:
+                alias_text = f" (alias: {', '.join(cmd.aliases)})"
+            return f"`{p}{cmd.qualified_name}`{alias_text} — {desc}"
+
+        def chunk_lines(lines: list[str], max_len: int = 1024) -> list[str]:
+            chunks: list[str] = []
+            current: list[str] = []
+            current_len = 0
+            for line in lines:
+                extra = len(line) + (1 if current else 0)
+                if current and current_len + extra > max_len:
+                    chunks.append("\n".join(current))
+                    current = [line]
+                    current_len = len(line)
+                else:
+                    current.append(line)
+                    current_len += extra
+            if current:
+                chunks.append("\n".join(current))
+            return chunks
+
+        owner_cmds = {}
+        unique = {}
+        for cmd in self.bot.walk_commands():
+            unique[cmd.qualified_name] = cmd
+        for cmd in unique.values():
+            if not is_owner_only(cmd):
+                continue
+            cog_name = cmd.cog.qualified_name if cmd.cog else "Otros"
+            owner_cmds.setdefault(cog_name, []).append(cmd)
+
+        if not owner_cmds:
+            return await ctx.send(embed=warning_embed("No se encontraron comandos de owner."))
+
+        embeds: list[discord.Embed] = []
+        for cog_name in sorted(owner_cmds.keys()):
+            commands_list = sorted(owner_cmds[cog_name], key=lambda c: c.qualified_name)
+            lines = [format_cmd(c) for c in commands_list]
+            chunks = chunk_lines(lines)
+            for i, chunk in enumerate(chunks):
+                title = f"🔐 Owner Help — {cog_name}"
+                embed = discord.Embed(
+                    title=title,
+                    description="Comandos exclusivos del owner. Úsalos con cuidado.",
+                    color=config.BLURPLE_COLOR
+                )
+                field_name = "Comandos" if i == 0 else "Continuación"
+                embed.add_field(name=field_name, value=chunk, inline=False)
+                embeds.append(embed)
+
+        await paginate(ctx, embeds)
     
     @commands.command(name="eval", aliases=["ev", "exec"])
     async def _eval(self, ctx: commands.Context, *, code: str):
