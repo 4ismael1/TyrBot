@@ -36,6 +36,92 @@ class Owner(commands.Cog):
         if content.startswith("```") and content.endswith("```"):
             return "\n".join(content.split("\n")[1:-1])
         return content.strip("` \n")
+
+    @commands.command(
+        name="ownerhelp",
+        aliases=["ohelp"],
+        extras={"hidden": True}
+    )
+    async def owner_help(self, ctx: commands.Context):
+        """Ayuda exclusiva para el owner"""
+        p = ctx.clean_prefix
+        embed = discord.Embed(
+            title="🔐 Owner Help",
+            description="Comandos exclusivos del owner. Úsalos con cuidado.",
+            color=config.BLURPLE_COLOR
+        )
+
+        embed.add_field(
+            name="🧪 Dev",
+            value=(
+                f"`{p}eval <codigo>` — Ejecuta código Python en el bot.\n"
+                "Útil para pruebas rápidas y depuración."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🧩 Extensiones",
+            value=(
+                f"`{p}load <cog>` — Carga un cog.\n"
+                f"`{p}unload <cog>` — Descarga un cog.\n"
+                f"`{p}reload [cog]` — Recarga un cog o todos si no pasas nada."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🧭 Servidores",
+            value=(
+                f"`{p}guilds` — Lista servidores donde está el bot.\n"
+                f"`{p}leave <guild_id>` — Saca el bot de un servidor."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="👥 Usuarios",
+            value=(
+                f"`{p}blacklist <usuario>` — Agrega o quita de la blacklist.\n"
+                f"`{p}blacklisted` — Muestra la lista de bloqueados.\n"
+                f"`{p}dm <usuario> <mensaje>` — Envía un DM."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="📣 Mensajes y estado",
+            value=(
+                f"`{p}say <#canal> <mensaje>` — Envía un mensaje.\n"
+                f"`{p}status <tipo> <texto>` — Cambia el estado del bot.\n"
+                f"Tipos: playing, watching, listening, streaming, competing."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🗃️ Datos y cache",
+            value=(
+                f"`{p}sql <query>` — Ejecuta un find en MongoDB (solo find).\n"
+                f"`{p}clearcache [patrón]` — Limpia cache de Redis.\n"
+                f"`{p}cacheinfo` — Info de Redis."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🔧 Slash",
+            value=(
+                f"`{p}sync` — Sincroniza slash global.\n"
+                f"`{p}sync guild` — Sincroniza solo en este servidor.\n"
+                f"`{p}sync clear` / `{p}sync clearguild` — Limpia y sincroniza."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="⚡ Control",
+            value=(
+                f"`{p}shutdown` — Apaga el bot.\n"
+                f"`{p}restart` — Reinicia el proceso."
+            ),
+            inline=False
+        )
+
+        await ctx.send(embed=embed)
     
     @commands.command(name="eval", aliases=["ev", "exec"])
     async def _eval(self, ctx: commands.Context, *, code: str):
