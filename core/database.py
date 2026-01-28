@@ -83,6 +83,10 @@ class Database:
             # Índices para moderación
             await self.warnings.create_index([("guild_id", 1), ("user_id", 1)])
             await self.modlogs.create_index([("guild_id", 1), ("case_id", 1)])
+
+            # Índices para licencias
+            await self.licenses.create_index("key", unique=True)
+            await self.licenses.create_index("guild_id")
             
             logger.info("✅ Índices de MongoDB creados correctamente")
             
@@ -179,6 +183,11 @@ class Database:
     @property
     def modlogs(self) -> AsyncIOMotorCollection:
         return self.db["modlogs"]
+
+    # Licencias
+    @property
+    def licenses(self) -> AsyncIOMotorCollection:
+        return self.db["licenses"]
     
     @property
     def quarantine(self) -> AsyncIOMotorCollection:
