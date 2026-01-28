@@ -246,35 +246,75 @@ class Licensing(commands.Cog):
     async def license_list(
         self,
         ctx: commands.Context,
-        status: Optional[Literal["active", "unused", "revoked", "all"]] = "active"
+        status: Optional[Literal["active", "unused", "revoked", "all"]] = "all"
     ):
         """Listar licencias (owner)"""
-        status = status or "active"
+        status = (status or "all").lower()
         filter_status = None if status == "all" else status
 
-        docs = await license_manager.list_licenses(filter_status, limit=200)
+        limit = 500
+        docs = await license_manager.list_licenses(filter_status, limit=limit)
         if not docs:
             return await ctx.send(embed=warning_embed("No hay licencias para mostrar."))
 
-        lines = []
+        status_title = {
+            "all": "todas",
+            "active": "activas",
+            "unused": "sin canjear",
+            "revoked": "revocadas",
+        }.get(status, status)
+
+        counts = {"active": 0, "unused": 0, "revoked": 0}
+        entries = []
         for doc in docs:
             key = doc.get("key", "N/A")
-            state = doc.get("status", "active")
             guild_id = doc.get("guild_id")
-            if state == "active" and guild_id:
-                label = f"Activo | Guild {guild_id}"
-            elif state == "active":
-                label = "Libre"
+            state = doc.get("status", "active")
+
+            if state == "revoked":
+                counts["revoked"] += 1
+                tag = "[REVOCADA]"
+            elif guild_id:
+                counts["active"] += 1
+                tag = "[ACTIVA]"
             else:
-                label = "Revocado"
-            lines.append(f"`{key}` - {label}")
+                counts["unused"] += 1
+                tag = "[SIN CANJEAR]"
+
+            guild_text = None
+            if guild_id:
+                guild = self.bot.get_guild(guild_id)
+                guild_text = f"{guild.name} ({guild_id})" if guild else str(guild_id)
+
+            details = []
+            if state == "revoked":
+                details.append(f"Revocada: {_format_dt(doc.get("revoked_at"))}")
+                if guild_text:
+                    details.append(f"Servidor: {guild_text}")
+                details.append(f"Creada: {_format_dt(doc.get("created_at"))}")
+            elif guild_id:
+                details.append(f"Servidor: {guild_text}")
+                details.append(f"Canjeada: {_format_dt(doc.get("redeemed_at"))}")
+                details.append(f"Creada: {_format_dt(doc.get("created_at"))}")
+            else:
+                details.append(f"Creada: {_format_dt(doc.get("created_at"))}")
+
+            entries.append(f"`{key}` {tag}\n" + " | ".join(details))
+
+        total = sum(counts.values())
+        summary = (
+            f"Total: **{total}** | Activas: **{counts['active']}** | "
+            f"Sin canjear: **{counts['unused']}** | Revocadas: **{counts['revoked']}**"
+        )
+        info = f"Filtro: **{status_title}** | Mostrando: **{len(docs)}** (max {limit})"
 
         embeds = []
-        for i in range(0, len(lines), 10):
-            chunk = lines[i:i + 10]
+        page_size = 6
+        for i in range(0, len(entries), page_size):
+            chunk = entries[i:i + page_size]
             embed = discord.Embed(
-                title=f"🔑 Licencias ({status})",
-                description="\n".join(chunk),
+                title=f"Licencias ({status_title})",
+                description=f"{summary}\n{info}\n\n" + "\n\n".join(chunk),
                 color=config.BLURPLE_COLOR
             )
             embeds.append(embed)
