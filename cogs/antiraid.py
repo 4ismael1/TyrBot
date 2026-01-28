@@ -79,19 +79,43 @@ class Antiraid(commands.Cog):
         )
         await self.invalidate_cache(guild_id)
 
-    async def is_whitelisted(self, guild_id: int, user_id: int) -> bool:
-        """Whitelist unificada: usa la whitelist del Antinuke"""
+    async def is_whitelisted(
+        self,
+        guild_id: int,
+        user_id: int,
+        member: Optional[discord.Member] = None
+    ) -> bool:
+        """Whitelist unificada: usa la whitelist del Antinuke (usuarios y roles)"""
         antinuke_cog = self.bot.get_cog("Antinuke")
         if antinuke_cog:
-            return await antinuke_cog.is_whitelisted(guild_id, user_id)
+            return await antinuke_cog.is_whitelisted(guild_id, user_id, member)
 
-        # Fallback directo DB/Redis si Antinuke no está cargado
+        users: set[int] = set()
+        roles: set[int] = set()
+
         wl = await cache.get_antinuke_whitelist(guild_id)
-        if wl is None:
+        if wl:
+            if isinstance(wl, dict):
+                users.update(wl.get("users", []) or [])
+                roles.update(wl.get("roles", []) or [])
+            elif isinstance(wl, list):
+                users.update(wl)
+        else:
             docs = await database.antinuke_whitelist.find({"guild_id": guild_id}).to_list(length=None)
-            wl = [d["user_id"] for d in docs]
-            await cache.set_antinuke_whitelist(guild_id, wl)
-        return user_id in set(wl)
+            for entry in docs:
+                if "user_id" in entry:
+                    users.add(entry["user_id"])
+                if "role_id" in entry:
+                    roles.add(entry["role_id"])
+            await cache.set_antinuke_whitelist(guild_id, {"users": list(users), "roles": list(roles)})
+
+        if user_id in users:
+            return True
+        if member:
+            for role in member.roles:
+                if role.id in roles:
+                    return True
+        return False
 
     async def is_trusted(self, guild_id: int, user_id: int) -> bool:
         """Verificar si un usuario está en la lista de trusted (unificada con Antinuke)"""
@@ -281,12 +305,12 @@ class Antiraid(commands.Cog):
         penalty = settings.get("penalty", "kick")
 
         # Whitelist unificada: nunca castigar usuarios whitelisted
-        if await self.is_whitelisted(guild_id, member.id):
+        if await self.is_whitelisted(guild_id, member.id, member):
             return
 
         # Si estamos en raid mode (verificar en Redis), castigar inmediatamente
         if await cache.antiraid_is_raid_mode(guild_id):
-            reason = "Antiraid: Servidor en modo raid"
+            reason = "Antiraid: raid_mode"
             await self.execute_penalty(member, settings, reason, "Servidor en modo raid por joins masivos")
             return
 
@@ -312,7 +336,7 @@ class Antiraid(commands.Cog):
                 )
 
                 # Ejecutar penalización a TODOS los que se unieron recientemente
-                reason = f"Antiraid: Mass join detectado ({len(recent_member_ids)} joins en {timeframe}s)"
+                reason = "Antiraid: mass_join"
 
                 action_count = 0
                 for member_id in recent_member_ids:
@@ -320,7 +344,7 @@ class Antiraid(commands.Cog):
                         raid_member = member.guild.get_member(member_id)
                         if raid_member and not raid_member.bot:
                             # Respetar whitelist
-                            if await self.is_whitelisted(guild_id, raid_member.id):
+                            if await self.is_whitelisted(guild_id, raid_member.id, raid_member):
                                 continue
                             if await self.execute_penalty(raid_member, settings, reason, f"Raid detectado ({len(recent_member_ids)} joins en {timeframe}s)"):
                                 action_count += 1
@@ -351,7 +375,7 @@ class Antiraid(commands.Cog):
                     f"{member} - Cuenta creada hace {account_age} días (mínimo: {min_age_days})"
                 )
 
-                reason = f"Antiraid: Cuenta muy nueva ({account_age} días)"
+                reason = "Antiraid: account_age"
 
                 try:
                     await self.execute_penalty(member, settings, reason, f"Cuenta muy nueva ({account_age} días, mínimo requerido: {min_age_days})")
@@ -371,7 +395,7 @@ class Antiraid(commands.Cog):
                     f"{member} - Sin avatar de perfil"
                 )
 
-                reason = "Antiraid: Usuario sin avatar"
+                reason = "Antiraid: no_avatar"
 
                 try:
                     await self.execute_penalty(member, settings, reason, "Usuario sin foto de perfil")
@@ -778,16 +802,31 @@ class Antiraid(commands.Cog):
         if not whitelist:
             return await ctx.send(embed=warning_embed("La whitelist está vacía"))
 
-        lines = []
+        user_lines = []
+        role_lines = []
         for entry in whitelist:
-            user = self.bot.get_user(entry["user_id"])
-            name = str(user) if user else f"ID: {entry['user_id']}"
-            lines.append(f"• {name}")
+            if "user_id" in entry:
+                user = self.bot.get_user(entry["user_id"])
+                mention = user.mention if user else f"<@{entry['user_id']}>"
+                user_lines.append(f"• {mention}")
+            if "role_id" in entry:
+                role = ctx.guild.get_role(entry["role_id"])
+                mention = role.mention if role else f"<@&{entry['role_id']}>"
+                role_lines.append(f"• {mention}")
 
         embed = discord.Embed(
             title="🛡️ Antiraid - Whitelist",
-            description="\n".join(lines),
             color=config.BLURPLE_COLOR
+        )
+        embed.add_field(
+            name="👤 Usuarios",
+            value="\n".join(user_lines) if user_lines else "Sin usuarios en whitelist",
+            inline=False
+        )
+        embed.add_field(
+            name="🏷️ Roles",
+            value="\n".join(role_lines) if role_lines else "Sin roles en whitelist",
+            inline=False
         )
         embed.set_footer(text="Whitelist compartida con Antinuke")
         await ctx.send(embed=embed)
@@ -807,6 +846,7 @@ class Antiraid(commands.Cog):
         await database.antinuke_whitelist.insert_one({
             "guild_id": ctx.guild.id,
             "user_id": user.id,
+            "type": "user",
             "added_by": ctx.author.id,
             "added_at": datetime.utcnow()
         })
@@ -851,6 +891,80 @@ class Antiraid(commands.Cog):
         await self.invalidate_cache(ctx.guild.id)
 
         embed = success_embed(f"**{user}** removido de la whitelist", ctx.author)
+        await ctx.send(embed=embed)
+
+    @whitelist.group(name="role", aliases=["rol"], invoke_without_command=True)
+    @antiraid_trusted()
+    async def whitelist_role(self, ctx: commands.Context):
+        """Gestionar whitelist de roles (unificada con Antinuke)"""
+        embed = discord.Embed(
+            title="🛡️ Antiraid - Whitelist de Roles",
+            description=(
+                f"`{ctx.clean_prefix}antiraid whitelist role add @rol` - Añadir rol\n"
+                f"`{ctx.clean_prefix}antiraid whitelist role remove @rol` - Quitar rol"
+            ),
+            color=config.BLURPLE_COLOR
+        )
+        await ctx.send(embed=embed)
+
+    @whitelist_role.command(name="add", aliases=["añadir"])
+    @antiraid_trusted()
+    async def whitelist_role_add(self, ctx: commands.Context, role: discord.Role):
+        """Añadir rol a la whitelist (Antinuke)"""
+        exists = await database.antinuke_whitelist.find_one({
+            "guild_id": ctx.guild.id,
+            "role_id": role.id
+        })
+
+        if exists:
+            return await ctx.send(embed=error_embed(f"{role.mention} ya está en la whitelist"))
+
+        await database.antinuke_whitelist.insert_one({
+            "guild_id": ctx.guild.id,
+            "role_id": role.id,
+            "type": "role",
+            "added_by": ctx.author.id,
+            "added_at": datetime.utcnow()
+        })
+
+        try:
+            await cache.delete(f"antinuke:whitelist:{ctx.guild.id}")
+        except Exception:
+            pass
+
+        antinuke_cog = ctx.bot.get_cog("Antinuke")
+        if antinuke_cog:
+            antinuke_cog._whitelist_cache.pop(ctx.guild.id, None)
+
+        await self.invalidate_cache(ctx.guild.id)
+
+        embed = success_embed(f"{role.mention} añadido a la whitelist", ctx.author)
+        await ctx.send(embed=embed)
+
+    @whitelist_role.command(name="remove", aliases=["quitar", "del"])
+    @antiraid_trusted()
+    async def whitelist_role_remove(self, ctx: commands.Context, role: discord.Role):
+        """Quitar rol de la whitelist (Antinuke)"""
+        result = await database.antinuke_whitelist.delete_one({
+            "guild_id": ctx.guild.id,
+            "role_id": role.id
+        })
+
+        if result.deleted_count == 0:
+            return await ctx.send(embed=error_embed(f"{role.mention} no está en la whitelist"))
+
+        try:
+            await cache.delete(f"antinuke:whitelist:{ctx.guild.id}")
+        except Exception:
+            pass
+
+        antinuke_cog = ctx.bot.get_cog("Antinuke")
+        if antinuke_cog:
+            antinuke_cog._whitelist_cache.pop(ctx.guild.id, None)
+
+        await self.invalidate_cache(ctx.guild.id)
+
+        embed = success_embed(f"{role.mention} removido de la whitelist", ctx.author)
         await ctx.send(embed=embed)
 
 

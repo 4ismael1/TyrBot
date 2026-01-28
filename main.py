@@ -58,7 +58,7 @@ class TyrBot(commands.AutoShardedBot):
             ),
             allowed_mentions=discord.AllowedMentions(
                 everyone=False,
-                roles=False,
+                roles=True,
                 replied_user=True
             )
         )

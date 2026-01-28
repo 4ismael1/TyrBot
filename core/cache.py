@@ -217,13 +217,13 @@ class RedisCache:
         key = f"{self.PREFIX_ANTINUKE}settings:{guild_id}"
         return await self.set_json(key, settings, self.DEFAULT_TTL)
     
-    async def get_antinuke_whitelist(self, guild_id: int) -> Optional[list]:
-        """Obtener whitelist antinuke de un servidor"""
+    async def get_antinuke_whitelist(self, guild_id: int) -> Optional[dict]:
+        """Obtener whitelist antinuke de un servidor (usuarios y roles)"""
         key = f"{self.PREFIX_ANTINUKE}whitelist:{guild_id}"
         return await self.get_json(key)
     
-    async def set_antinuke_whitelist(self, guild_id: int, whitelist: list) -> bool:
-        """Establecer whitelist antinuke"""
+    async def set_antinuke_whitelist(self, guild_id: int, whitelist: dict) -> bool:
+        """Establecer whitelist antinuke (usuarios y roles)"""
         key = f"{self.PREFIX_ANTINUKE}whitelist:{guild_id}"
         return await self.set_json(key, whitelist, self.DEFAULT_TTL)
     

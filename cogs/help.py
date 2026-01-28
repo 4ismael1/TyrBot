@@ -28,7 +28,7 @@ COG_CATEGORIES = {
 # Comandos destacados para la página principal
 FEATURED_COMMANDS = {
     "📋 Casos": [";case", ";case edit", ";case delete", ";case list", ";history"],
-    "🛡️ Antinuke": [";antinuke", ";antinuke whitelist", ";antinuke trusted", ";antinuke punishment", ";antinuke setroles", ";antinuke alertrole"],
+    "🛡️ Antinuke": [";antinuke", ";antinuke whitelist", ";antinuke trusted", ";antinuke punishment", ";antinuke actionpunishment", ";antinuke botkick", ";antinuke setroles", ";antinuke alertrole"],
     "🚨 Antiraid": [";antiraid", ";antiraid penalty", ";antiraid massjoin", ";antiraid age", ";antiraid noavatar"],
     "⚔️ Moderación": [";kick", ";ban", ";timeout", ";warn", ";purge", ";quarantine", ";unquarantine"],
     "📝 Logs": [";logs", ";logs channel", ";logs channel remove", ";logs category", ";logs ignore"],
@@ -114,7 +114,7 @@ class HelpCogSelect(discord.ui.Select):
         options = []
         for cog in cogs_list:
             emoji = getattr(cog, "emoji", "📁")
-            cmds = [c for c in cog.get_commands() if not c.hidden]
+            cmds = self.help_command._get_visible_commands(cog)
             options.append(
                 discord.SelectOption(
                     label=cog.qualified_name,
@@ -183,6 +183,39 @@ class HelpView(discord.ui.View):
 
 class CustomHelp(commands.HelpCommand):
     """Sistema de ayuda personalizado"""
+
+    def _get_visible_commands(self, cog: commands.Cog) -> list[commands.Command]:
+        """Obtener todos los comandos visibles (incluye subcomandos)"""
+        return [c for c in cog.walk_commands() if not c.hidden]
+
+    def _get_command_desc(self, command: commands.Command, max_len: int = 70) -> str:
+        """Descripción corta y limpia para un comando"""
+        text = command.brief or command.short_doc or command.help or "Sin descripción"
+        text = text.strip().splitlines()[0] if text else "Sin descripción"
+        if len(text) > max_len:
+            text = text[: max_len - 1].rstrip() + "…"
+        return text
+
+    def _chunk_lines(self, lines: list[str], max_len: int = 1024) -> list[str]:
+        """Dividir líneas en bloques que quepan en un field"""
+        chunks: list[str] = []
+        current: list[str] = []
+        current_len = 0
+
+        for line in lines:
+            extra = len(line) + (1 if current else 0)
+            if current and current_len + extra > max_len:
+                chunks.append("\n".join(current))
+                current = [line]
+                current_len = len(line)
+            else:
+                current.append(line)
+                current_len += extra
+
+        if current:
+            chunks.append("\n".join(current))
+
+        return chunks
     
     def _organize_cogs_by_category(self) -> dict[str, list]:
         """Organizar cogs del bot por categorías temáticas"""
@@ -196,7 +229,7 @@ class CustomHelp(commands.HelpCommand):
             for cog_name in cog_names:
                 cog = bot.get_cog(cog_name)
                 if cog:
-                    cmds = [c for c in cog.get_commands() if not c.hidden]
+                    cmds = self._get_visible_commands(cog)
                     if cmds:  # Solo si tiene comandos visibles
                         cogs_in_category.append(cog)
                         used_cogs.add(cog_name)
@@ -208,7 +241,7 @@ class CustomHelp(commands.HelpCommand):
         otros = []
         for cog_name, cog in bot.cogs.items():
             if cog_name not in used_cogs:
-                cmds = [c for c in cog.get_commands() if not c.hidden]
+                cmds = self._get_visible_commands(cog)
                 if cmds:
                     otros.append(cog)
         
@@ -224,7 +257,7 @@ class CustomHelp(commands.HelpCommand):
         
         # Contar comandos
         total_commands = len(set(bot.walk_commands()))
-        total_cogs = len([c for c in bot.cogs.values() if any(not cmd.hidden for cmd in c.get_commands())])
+        total_cogs = len([c for c in bot.cogs.values() if any(not cmd.hidden for cmd in c.walk_commands())])
         
         embed = discord.Embed(
             title="📚 Centro de Ayuda",
@@ -247,6 +280,7 @@ class CustomHelp(commands.HelpCommand):
             name="⭐ Comandos Destacados",
             value=(
                 f"**📋 Casos:** `{ctx.clean_prefix}case` `{ctx.clean_prefix}case edit` `{ctx.clean_prefix}history`\n"
+                f"**🛡️ Antinuke:** `{ctx.clean_prefix}antinuke` `{ctx.clean_prefix}antinuke punishment` `{ctx.clean_prefix}antinuke botkick`\n"
                 f"**⚔️ Mod:** `{ctx.clean_prefix}kick` `{ctx.clean_prefix}ban` `{ctx.clean_prefix}warn` `{ctx.clean_prefix}massban`\n"
                 f"**🎭 FakePerms:** `{ctx.clean_prefix}fp grant` `{ctx.clean_prefix}fp edit` `{ctx.clean_prefix}fp check`\n"
                 f"**📝 Logs:** `{ctx.clean_prefix}logs` `{ctx.clean_prefix}logs category`"
@@ -260,7 +294,7 @@ class CustomHelp(commands.HelpCommand):
         # Mostrar resumen de categorías
         category_lines = []
         for category_name, cogs_list in categories.items():
-            total_cmds = sum(len([c for c in cog.get_commands() if not c.hidden]) for cog in cogs_list)
+            total_cmds = sum(len(self._get_visible_commands(cog)) for cog in cogs_list)
             category_lines.append(f"{category_name} — {len(cogs_list)} módulos, {total_cmds} comandos")
         
         embed.add_field(
@@ -290,21 +324,19 @@ class CustomHelp(commands.HelpCommand):
         # Listar módulos de esta categoría
         for cog in cogs_list:
             emoji = getattr(cog, "emoji", "📁")
-            cmds = [c for c in cog.get_commands() if not c.hidden]
-            
-            # Mostrar algunos comandos de ejemplo
-            cmd_names = [f"`{c.name}`" for c in cmds[:5]]
-            cmd_text = ", ".join(cmd_names)
-            if len(cmds) > 5:
-                cmd_text += f" y {len(cmds) - 5} más..."
+            cmds = self._get_visible_commands(cog)
             
             embed.add_field(
                 name=f"{emoji} {cog.qualified_name}",
-                value=f"{cog.description or 'Sin descripción'}\n**Comandos:** {cmd_text}",
+                value=(
+                    f"{cog.description or 'Sin descripción'}\n"
+                    f"**Comandos:** {len(cmds)}\n"
+                    "Usa el menú de módulos para ver la lista completa."
+                ),
                 inline=False
             )
         
-        total_cmds = sum(len([c for c in cog.get_commands() if not c.hidden]) for cog in cogs_list)
+        total_cmds = sum(len(self._get_visible_commands(cog)) for cog in cogs_list)
         embed.set_footer(
             text=f"{len(cogs_list)} módulos, {total_cmds} comandos en esta categoría"
         )
@@ -321,82 +353,32 @@ class CustomHelp(commands.HelpCommand):
             description=cog.description or "Sin descripción",
             color=config.BLURPLE_COLOR
         )
-        
-        # Separar comandos principales de grupos
-        main_commands = []
-        group_commands = []
-        
-        for cmd in sorted(cog.get_commands(), key=lambda c: c.name):
-            if cmd.hidden:
-                continue
-            
-            brief = cmd.brief or cmd.short_doc or "Sin descripción"
-            
-            if isinstance(cmd, commands.Group):
-                subcmds = [c.name for c in cmd.commands if not c.hidden]
-                if subcmds:
-                    subcmd_text = ", ".join(f"`{s}`" for s in subcmds[:5])
-                    if len(subcmds) > 5:
-                        subcmd_text += f" +{len(subcmds) - 5}"
-                    group_commands.append(
-                        f"**`{ctx.clean_prefix}{cmd.name}`** — {brief[:35]}\n"
-                        f"  ↳ {subcmd_text}"
-                    )
-                else:
-                    main_commands.append(f"`{ctx.clean_prefix}{cmd.name}` — {brief[:45]}")
-            else:
-                main_commands.append(f"`{ctx.clean_prefix}{cmd.name}` — {brief[:45]}")
-        
-        # Mostrar grupos primero (comandos con subcomandos)
-        if group_commands:
-            group_text = "\n".join(group_commands[:6])
-            if len(group_commands) > 6:
-                group_text += f"\n*... y {len(group_commands) - 6} más*"
+
+        visible_commands = self._get_visible_commands(cog)
+        if not visible_commands:
             embed.add_field(
-                name=f"📂 Grupos de Comandos ({len(group_commands)})",
-                value=group_text,
+                name="📜 Comandos",
+                value="Sin comandos visibles.",
                 inline=False
             )
-        
-        # Luego comandos simples
-        if main_commands:
-            # Mostrar todos los comandos, no truncar
-            cmd_text = "\n".join(main_commands)
-            
-            # Si es muy largo, dividir en campos
-            if len(cmd_text) > 1024:
-                # Dividir en chunks que quepan
-                chunks = []
-                current_chunk = []
-                current_len = 0
-                
-                for cmd in main_commands:
-                    if current_len + len(cmd) + 1 > 1000:
-                        chunks.append("\n".join(current_chunk))
-                        current_chunk = [cmd]
-                        current_len = len(cmd)
-                    else:
-                        current_chunk.append(cmd)
-                        current_len += len(cmd) + 1
-                
-                if current_chunk:
-                    chunks.append("\n".join(current_chunk))
-                
-                for i, chunk in enumerate(chunks):
-                    field_name = f"📜 Comandos ({len(main_commands)})" if i == 0 else "📜 Continuación..."
-                    embed.add_field(
-                        name=field_name,
-                        value=chunk,
-                        inline=False
-                    )
-            else:
-                embed.add_field(
-                    name=f"📜 Comandos ({len(main_commands)})",
-                    value=cmd_text,
-                    inline=False
-                )
-        
-        total_cmds = len(main_commands) + len(group_commands)
+            embed.set_footer(text=f"{ctx.clean_prefix}help <comando> para más info")
+            return embed
+
+        lines = []
+        for cmd in sorted(visible_commands, key=lambda c: c.qualified_name):
+            desc = self._get_command_desc(cmd)
+            lines.append(f"• `{ctx.clean_prefix}{cmd.qualified_name}` — {desc}")
+
+        chunks = self._chunk_lines(lines, max_len=1024)
+        for i, chunk in enumerate(chunks):
+            field_name = f"📜 Comandos ({len(visible_commands)})" if i == 0 else "📜 Continuación..."
+            embed.add_field(
+                name=field_name,
+                value=chunk,
+                inline=False
+            )
+
+        total_cmds = len(visible_commands)
         embed.set_footer(
             text=f"Total: {total_cmds} comandos | {ctx.clean_prefix}help <comando> para más info"
         )
@@ -545,21 +527,18 @@ class CustomHelp(commands.HelpCommand):
             for c in sorted(command.commands, key=lambda x: x.name):
                 if c.hidden:
                     continue
-                brief = c.brief or c.short_doc or ""
-                if brief:
-                    subcommands.append(f"`{c.name}` — {brief[:35]}")
-                else:
-                    subcommands.append(f"`{c.name}`")
+                brief = self._get_command_desc(c)
+                subcommands.append(f"• `{ctx.clean_prefix}{c.qualified_name}` — {brief}")
             
             if subcommands:
-                sub_text = "\n".join(subcommands[:10])
-                if len(subcommands) > 10:
-                    sub_text += f"\n*... y {len(subcommands) - 10} más*"
-                embed.add_field(
-                    name=f"📁 Subcomandos ({len(subcommands)})",
-                    value=sub_text,
-                    inline=False
-                )
+                chunks = self._chunk_lines(subcommands, max_len=1024)
+                for i, chunk in enumerate(chunks):
+                    field_name = f"📁 Subcomandos ({len(subcommands)})" if i == 0 else "📁 Continuación..."
+                    embed.add_field(
+                        name=field_name,
+                        value=chunk,
+                        inline=False
+                    )
         
         embed.set_footer(text="<> = Requerido | [] = Opcional")
         

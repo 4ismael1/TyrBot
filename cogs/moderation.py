@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import discord
+import logging
 from discord.ext import commands
 from discord import ui
 from datetime import timedelta, timezone
@@ -133,7 +134,89 @@ class Moderation(commands.Cog):
     
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-    
+        self._logger = logging.getLogger(__name__)
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        """Reaplicar cuarentena si el usuario salió y volvió a entrar"""
+        if member.bot:
+            return
+
+        quarantine_data = await database.quarantine.find_one({
+            "guild_id": member.guild.id,
+            "user_id": member.id
+        })
+        if not quarantine_data:
+            return
+
+        # Esperar un poco para que otros cogs (autorole/verification) terminen
+        await asyncio.sleep(1)
+
+        # Verificar que la cuarentena sigue activa
+        still_quarantined = await database.quarantine.find_one({
+            "guild_id": member.guild.id,
+            "user_id": member.id
+        })
+        if not still_quarantined:
+            return
+
+        settings = None
+        antinuke_cog = self.bot.get_cog("Antinuke")
+        if antinuke_cog:
+            try:
+                settings = await antinuke_cog.get_settings(member.guild.id)
+            except Exception:
+                settings = None
+
+        if not settings:
+            settings = await database.antinuke_servers.find_one(
+                {"guild_id": member.guild.id},
+                {"quarantine_role": 1}
+            )
+
+        quarantine_role_id = settings.get("quarantine_role") if settings else None
+        if not quarantine_role_id:
+            return
+
+        quarantine_role = member.guild.get_role(quarantine_role_id)
+        if not quarantine_role:
+            return
+
+        me = member.guild.me or member.guild.get_member(self.bot.user.id)
+        if not me or not me.guild_permissions.manage_roles:
+            return
+        if quarantine_role >= me.top_role:
+            return
+
+        roles_to_remove = [
+            r for r in member.roles
+            if r != member.guild.default_role and r != quarantine_role and r < me.top_role
+        ]
+
+        try:
+            if roles_to_remove:
+                await member.remove_roles(*roles_to_remove, reason="Cuarentena persistente (rejoin)")
+            if quarantine_role not in member.roles:
+                await member.add_roles(quarantine_role, reason="Cuarentena persistente (rejoin)")
+
+            reason = quarantine_data.get("reason") or "Sin razón especificada"
+            dm_embed = discord.Embed(
+                title="🔒 Tu cuarentena sigue activa",
+                description=(
+                    f"Salirte y volver a entrar **no elimina** la sanción en **{member.guild.name}**.\n"
+                    "La cuarentena es persistente hasta que un moderador la quite."
+                ),
+                color=0x800080
+            )
+            dm_embed.add_field(name="Razón", value=reason, inline=False)
+            dm_embed.set_footer(text=f"Servidor: {member.guild.name}")
+            try:
+                await member.send(embed=dm_embed)
+            except discord.HTTPException:
+                pass
+        except discord.HTTPException:
+            pass
+
     # ========== Helpers ==========
     
     async def send_mod_log(
@@ -149,7 +232,7 @@ class Moderation(commands.Cog):
         """Enviar log de moderación al canal configurado"""
         logging_cog = self.bot.get_cog("Logging")
         if not logging_cog:
-            print(f"[MOD_LOG] No se encontró el cog Logging")
+            self._logger.debug("[MOD_LOG] No se encontró el cog Logging")
             return
         
         event_map = {
@@ -167,13 +250,13 @@ class Moderation(commands.Cog):
         event = event_map.get(action, f"mod_{action}")
         
         is_enabled = await logging_cog.is_event_enabled(guild.id, event)
-        print(f"[MOD_LOG] Evento '{event}' habilitado: {is_enabled}")
+        self._logger.debug("[MOD_LOG] Evento '%s' habilitado: %s", event, is_enabled)
         
         if not is_enabled:
             return
         
         channel = await logging_cog.get_log_channel(guild, event)
-        print(f"[MOD_LOG] Canal obtenido: {channel}")
+        self._logger.debug("[MOD_LOG] Canal obtenido: %s", channel)
         
         if not channel:
             return

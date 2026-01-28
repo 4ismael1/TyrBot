@@ -6,6 +6,7 @@ Cog de Antinuke - Protección avanzada del servidor
 from __future__ import annotations
 
 import asyncio
+import copy
 import discord
 from discord.ext import commands, tasks
 from discord import AuditLogAction
@@ -24,6 +25,9 @@ class Punishment(Enum):
     KICK = "kick"
     STRIP = "strip"  # Quitar todos los roles
     QUARANTINE = "quarantine"  # Asignar rol de cuarentena
+
+
+PUNISHMENT_VALUES = {p.value for p in Punishment}
 
 
 class AntinukeAction(Enum):
@@ -69,17 +73,18 @@ class Antinuke(commands.Cog):
         "quarantine_role": None,  # Rol de cuarentena
         "mute_role": None,  # Rol de mute
         "revert_actions": True,  # Revertir acciones (eliminar canales/roles creados)
+        "bot_quarantine_kick": True,  # Si el castigo es cuarentena y es bot, usar kick
         "trusted": [],  # Lista de usuarios que pueden configurar
         "actions": {
-            AntinukeAction.BAN_MEMBERS.value: {"enabled": False, "limit": 3},
-            AntinukeAction.KICK_MEMBERS.value: {"enabled": False, "limit": 3},
-            AntinukeAction.CREATE_CHANNELS.value: {"enabled": False, "limit": 5},
-            AntinukeAction.DELETE_CHANNELS.value: {"enabled": False, "limit": 3},
-            AntinukeAction.CREATE_ROLES.value: {"enabled": False, "limit": 5},
-            AntinukeAction.DELETE_ROLES.value: {"enabled": False, "limit": 3},
-            AntinukeAction.CREATE_WEBHOOKS.value: {"enabled": False, "limit": 3},
-            AntinukeAction.MENTION_EVERYONE.value: {"enabled": False, "limit": 3},
-            AntinukeAction.ADD_BOT.value: {"enabled": False, "limit": 1},
+            AntinukeAction.BAN_MEMBERS.value: {"enabled": False, "limit": 3, "punishment": None},
+            AntinukeAction.KICK_MEMBERS.value: {"enabled": False, "limit": 3, "punishment": None},
+            AntinukeAction.CREATE_CHANNELS.value: {"enabled": False, "limit": 5, "punishment": None},
+            AntinukeAction.DELETE_CHANNELS.value: {"enabled": False, "limit": 3, "punishment": None},
+            AntinukeAction.CREATE_ROLES.value: {"enabled": False, "limit": 5, "punishment": None},
+            AntinukeAction.DELETE_ROLES.value: {"enabled": False, "limit": 3, "punishment": None},
+            AntinukeAction.CREATE_WEBHOOKS.value: {"enabled": False, "limit": 3, "punishment": None},
+            AntinukeAction.MENTION_EVERYONE.value: {"enabled": False, "limit": 3, "punishment": None},
+            AntinukeAction.ADD_BOT.value: {"enabled": False, "limit": 1, "punishment": None},
         }
     }
 
@@ -88,7 +93,7 @@ class Antinuke(commands.Cog):
 
         # Cache local de configuraciones
         self._settings_cache: dict[int, dict] = {}
-        self._whitelist_cache: dict[int, set[int]] = {}
+        self._whitelist_cache: dict[int, dict[str, set[int]]] = {}
         self._trusted_cache: dict[int, set[int]] = {}
 
         # Contadores de acciones (para rate limiting)
@@ -116,11 +121,18 @@ class Antinuke(commands.Cog):
             guild_id = doc["guild_id"]
             self._settings_cache[guild_id] = doc
 
-            # Cargar whitelist
+            # Cargar whitelist (usuarios y roles)
             whitelist = await database.antinuke_whitelist.find(
                 {"guild_id": guild_id}
             ).to_list(length=None)
-            self._whitelist_cache[guild_id] = {w["user_id"] for w in whitelist}
+            users = set()
+            roles = set()
+            for entry in whitelist:
+                if "user_id" in entry:
+                    users.add(entry["user_id"])
+                if "role_id" in entry:
+                    roles.add(entry["role_id"])
+            self._whitelist_cache[guild_id] = {"users": users, "roles": roles}
 
             # Cargar trusted (unificado con Antiraid)
             trusted = set(doc.get("trusted", []))
@@ -158,7 +170,7 @@ class Antinuke(commands.Cog):
             await cache.set_antinuke_settings(guild_id, doc)
             return doc
 
-        return self.DEFAULT_SETTINGS.copy()
+        return copy.deepcopy(self.DEFAULT_SETTINGS)
 
     async def invalidate_cache(self, guild_id: int):
         """Invalidar cache para un guild específico"""
@@ -175,22 +187,52 @@ class Antinuke(commands.Cog):
         except Exception:
             pass
 
-    async def is_whitelisted(self, guild_id: int, user_id: int) -> bool:
-        """Verificar si un usuario está en la whitelist"""
+    async def _get_whitelist(self, guild_id: int) -> dict[str, set[int]]:
+        """Obtener whitelist (usuarios y roles) con cach?"""
         if guild_id in self._whitelist_cache:
-            return user_id in self._whitelist_cache[guild_id]
+            return self._whitelist_cache[guild_id]
 
-        # Cargar whitelist si no está en caché
-        whitelist = await cache.get_antinuke_whitelist(guild_id)
-        if whitelist is None:
+        users: set[int] = set()
+        roles: set[int] = set()
+
+        cached = await cache.get_antinuke_whitelist(guild_id)
+        if cached:
+            if isinstance(cached, dict):
+                users.update(cached.get("users", []) or [])
+                roles.update(cached.get("roles", []) or [])
+            elif isinstance(cached, list):
+                users.update(cached)
+        else:
             docs = await database.antinuke_whitelist.find(
                 {"guild_id": guild_id}
             ).to_list(length=None)
-            whitelist = [d["user_id"] for d in docs]
-            await cache.set_antinuke_whitelist(guild_id, whitelist)
+            for entry in docs:
+                if "user_id" in entry:
+                    users.add(entry["user_id"])
+                if "role_id" in entry:
+                    roles.add(entry["role_id"])
+            await cache.set_antinuke_whitelist(guild_id, {"users": list(users), "roles": list(roles)})
 
-        self._whitelist_cache[guild_id] = set(whitelist)
-        return user_id in self._whitelist_cache[guild_id]
+        self._whitelist_cache[guild_id] = {"users": users, "roles": roles}
+        return self._whitelist_cache[guild_id]
+
+    async def is_whitelisted(
+        self,
+        guild_id: int,
+        user_id: int,
+        member: Optional[discord.Member] = None
+    ) -> bool:
+        """Verificar si un usuario est? en la whitelist (por usuario o rol)"""
+        data = await self._get_whitelist(guild_id)
+        if user_id in data.get("users", set()):
+            return True
+
+        if member:
+            for role in member.roles:
+                if role.id in data.get("roles", set()):
+                    return True
+
+        return False
 
     async def is_trusted(self, guild_id: int, user_id: int) -> bool:
         """Verificar si un usuario está en la lista de trusted (unificada con Antiraid)"""
@@ -210,6 +252,37 @@ class Antinuke(commands.Cog):
 
         self._trusted_cache[guild_id] = trusted
         return user_id in trusted
+
+    def resolve_punishment_for_action(self, settings: dict, action: AntinukeAction) -> Punishment:
+        """
+        Resolver castigo para una acciÃ³n:
+        - Si actions.<accion>.punishment estÃ¡ seteado -> usarlo
+        - Si no -> usar castigo global
+        - Si hay datos invÃ¡lidos -> fallback BAN
+        """
+        global_value = settings.get("punishment", Punishment.BAN.value)
+        if global_value not in PUNISHMENT_VALUES:
+            global_value = Punishment.BAN.value
+
+        action_cfg = (settings.get("actions", {}) or {}).get(action.value, {}) or {}
+        action_value = action_cfg.get("punishment") or global_value
+
+        if action_value not in PUNISHMENT_VALUES:
+            action_value = global_value
+
+        return Punishment(action_value)
+
+    def adjust_punishment_for_bot(
+        self,
+        settings: dict,
+        member: discord.Member,
+        punishment: Punishment
+    ) -> Punishment:
+        """Ajustar castigo si el infractor es bot y la cuarentena está activa"""
+        if member.bot and punishment == Punishment.QUARANTINE:
+            if settings.get("bot_quarantine_kick", True):
+                return Punishment.KICK
+        return punishment
 
     async def increment_action(
         self, 
@@ -240,7 +313,7 @@ class Antinuke(commands.Cog):
         punishment: Punishment
     ) -> bool:
         """Ejecutar castigo al perpetrador"""
-        reason = f"Antinuke: Excedió el límite de {action.value}"
+        reason = f"Antinuke: {action.value}"
 
         # Enviar DM al usuario antes del castigo
         punishment_names = {
@@ -390,9 +463,11 @@ class Antinuke(commands.Cog):
         if not action_config.get("enabled"):
             return False
 
+        member = guild.get_member(user_id)
+
         # SOLO excluir whitelist y owner - nadie más
         # El antinuke debe actuar contra CUALQUIERA que abuse, incluso admins
-        if await self.is_whitelisted(guild.id, user_id):
+        if await self.is_whitelisted(guild.id, user_id, member):
             return False
 
         # El dueño nunca es castigado
@@ -407,7 +482,6 @@ class Antinuke(commands.Cog):
             return False
 
         # Obtener miembro
-        member = guild.get_member(user_id)
         if not member:
             return False
 
@@ -416,7 +490,8 @@ class Antinuke(commands.Cog):
             return False
 
         # Ejecutar castigo
-        punishment = Punishment(settings.get("punishment", Punishment.BAN.value))
+        punishment = self.resolve_punishment_for_action(settings, action)
+        punishment = self.adjust_punishment_for_bot(settings, member, punishment)
         success = await self.execute_punishment(guild, member, action, punishment)
 
         # Log
@@ -574,7 +649,7 @@ class Antinuke(commands.Cog):
 
         # SOLO excluir whitelist y owner - NADIE MÁS
         # Si alguien tiene el permiso por accidente, el antinuke DEBE actuar
-        if await self.is_whitelisted(message.guild.id, user_id):
+        if await self.is_whitelisted(message.guild.id, user_id, message.author):
             return
         if user_id == message.guild.owner_id:
             return
@@ -606,6 +681,10 @@ class Antinuke(commands.Cog):
         if not action_config.get("enabled"):
             return
 
+        # Si el bot está en whitelist, no aplicar antinuke
+        if await self.is_whitelisted(member.guild.id, member.id, member):
+            return
+
         # Verificar quién añadió el bot
         async for entry in member.guild.audit_logs(action=AuditLogAction.bot_add, limit=1):
             if entry.target.id == member.id:
@@ -614,7 +693,7 @@ class Antinuke(commands.Cog):
 
                 # SOLO whitelist y owner pueden añadir bots sin consecuencias
                 # Los trusted NO están exentos de esto
-                if await self.is_whitelisted(member.guild.id, user_id):
+                if await self.is_whitelisted(member.guild.id, user_id, adder):
                     return
                 if user_id == member.guild.owner_id:
                     return
@@ -628,7 +707,8 @@ class Antinuke(commands.Cog):
                 # Castigar al que añadió el bot (incluso si es trusted)
                 # Para add_bot, el límite es 1, así que siempre castiga
                 if adder and adder.top_role < member.guild.me.top_role:
-                    punishment = Punishment(settings.get("punishment", Punishment.BAN.value))
+                    punishment = self.resolve_punishment_for_action(settings, AntinukeAction.ADD_BOT)
+                    punishment = self.adjust_punishment_for_bot(settings, adder, punishment)
                     success = await self.execute_punishment(
                         member.guild, adder, AntinukeAction.ADD_BOT, punishment
                     )
@@ -681,6 +761,7 @@ class Antinuke(commands.Cog):
                 },
                 "$setOnInsert": {
                     "punishment": Punishment.BAN.value,
+                    "bot_quarantine_kick": True,
                     "trusted": [ctx.author.id],
                     "actions": self.DEFAULT_SETTINGS["actions"]
                 }
@@ -732,13 +813,13 @@ class Antinuke(commands.Cog):
         - strip: Quitar todos los roles
         - quarantine: Quitar roles y asignar rol de cuarentena
 
-        **Nota:** Para quarantine, configura primero el rol con ;antinuke setup quarantine
+        **Nota:** Para quarantine, configura primero el rol con ;antinuke setroles quarantine
         """
         if punishment == "quarantine":
             settings = await self.get_settings(ctx.guild.id)
             if not settings.get("quarantine_role"):
                 return await ctx.send(embed=warning_embed(
-                    f"⚠️ Primero configura el rol de cuarentena con:\n`{ctx.clean_prefix}antinuke setup quarantine`"
+                    f"⚠️ Primero configura el rol de cuarentena con:\n`{ctx.clean_prefix}antinuke setroles quarantine`"
                 ))
 
         await database.antinuke_servers.update_one(
@@ -751,6 +832,89 @@ class Antinuke(commands.Cog):
 
         embed = success_embed(f"Castigo establecido en **{punishment.upper()}**", ctx.author)
         await ctx.send(embed=embed)
+
+    @antinuke.command(
+        name="actionpunishment",
+        aliases=["punishaction", "castigoaccion", "castigoporaccion", "perpunishment"]
+    )
+    @antinuke_trusted()
+    async def antinuke_action_punishment(
+        self,
+        ctx: commands.Context,
+        action: str,
+        punishment: Literal["ban", "kick", "strip", "quarantine", "default"]
+    ):
+        """
+        Configurar castigo POR ACCIÓN.
+        - default: usar castigo global
+        """
+        action = action.lower().strip()
+        valid_actions = [a.value for a in AntinukeAction]
+        if action not in valid_actions:
+            return await ctx.send(embed=error_embed(
+                f"AcciÃ³n invÃ¡lida. Opciones: {', '.join(valid_actions)}"
+            ))
+
+        if punishment == "quarantine":
+            settings = await self.get_settings(ctx.guild.id)
+            if not settings.get("quarantine_role"):
+                return await ctx.send(embed=warning_embed(
+                    f"âš ï¸ Primero configura el rol de cuarentena con:\n"
+                    f"`{ctx.clean_prefix}antinuke setroles quarantine`"
+                ))
+
+        current_settings = await self.get_settings(ctx.guild.id)
+        merged_actions = copy.deepcopy(self.DEFAULT_SETTINGS["actions"])
+        current_actions = current_settings.get("actions", {}) or {}
+
+        for a in AntinukeAction:
+            if isinstance(current_actions.get(a.value), dict):
+                merged_actions[a.value].update(current_actions[a.value])
+
+        if punishment == "default":
+            merged_actions[action]["punishment"] = None
+        else:
+            merged_actions[action]["punishment"] = punishment
+
+        await database.antinuke_servers.update_one(
+            {"guild_id": ctx.guild.id},
+            {"$set": {"guild_id": ctx.guild.id, "actions": merged_actions}},
+            upsert=True
+        )
+
+        self._settings_cache.pop(ctx.guild.id, None)
+        await cache.delete(f"antinuke:settings:{ctx.guild.id}")
+
+        if punishment == "default":
+            embed = success_embed(f"ðŸŽ¯ Castigo de **{action}** restablecido a **GLOBAL**", ctx.author)
+        else:
+            embed = success_embed(f"ðŸŽ¯ Castigo de **{action}** establecido en **{punishment.upper()}**", ctx.author)
+
+        await ctx.send(embed=embed)
+
+    @antinuke.command(name="botkick", aliases=["botpunish", "botquarantine", "botq"])
+    @antinuke_trusted()
+    async def antinuke_botkick(self, ctx: commands.Context, toggle: Literal["on", "off"]):
+        """
+        Si el castigo es cuarentena y el infractor es bot, usar kick automÃ¡tico.
+
+        **Uso:** ;antinuke botkick <on/off>
+        """
+        new_state = toggle == "on"
+        await database.antinuke_servers.update_one(
+            {"guild_id": ctx.guild.id},
+            {"$set": {"bot_quarantine_kick": new_state}},
+            upsert=True
+        )
+
+        self._settings_cache.pop(ctx.guild.id, None)
+        await cache.delete(f"antinuke:settings:{ctx.guild.id}")
+
+        status = "activado" if new_state else "desactivado"
+        await ctx.send(embed=success_embed(
+            f"🤖 Kick automÃ¡tico para bots en cuarentena **{status}**",
+            ctx.author
+        ))
 
     @antinuke.command(name="revert", aliases=["revertir"])
     @antinuke_trusted()
@@ -1466,6 +1630,42 @@ class Antinuke(commands.Cog):
 
     # ========== Whitelist ==========
 
+    @commands.group(name="whitelist", aliases=["wl"], invoke_without_command=True)
+    @antinuke_trusted()
+    async def whitelist_root(self, ctx: commands.Context):
+        """Ver la whitelist unificada (Antinuke/Antiraid)"""
+        await self.whitelist.callback(self, ctx)
+
+    @whitelist_root.command(name="add", aliases=["añadir"])
+    @antinuke_trusted()
+    async def whitelist_root_add(self, ctx: commands.Context, user: discord.User):
+        """Añadir usuario a la whitelist (unificada)"""
+        await self.whitelist_add.callback(self, ctx, user)
+
+    @whitelist_root.command(name="remove", aliases=["quitar", "del"])
+    @antinuke_trusted()
+    async def whitelist_root_remove(self, ctx: commands.Context, user: discord.User):
+        """Quitar usuario de la whitelist (unificada)"""
+        await self.whitelist_remove.callback(self, ctx, user)
+
+    @whitelist_root.group(name="role", aliases=["rol"], invoke_without_command=True)
+    @antinuke_trusted()
+    async def whitelist_root_role(self, ctx: commands.Context):
+        """Gestionar whitelist de roles (unificada)"""
+        await self.whitelist_role.callback(self, ctx)
+
+    @whitelist_root_role.command(name="add", aliases=["añadir"])
+    @antinuke_trusted()
+    async def whitelist_root_role_add(self, ctx: commands.Context, role: discord.Role):
+        """Añadir rol a la whitelist (unificada)"""
+        await self.whitelist_role_add.callback(self, ctx, role)
+
+    @whitelist_root_role.command(name="remove", aliases=["quitar", "del"])
+    @antinuke_trusted()
+    async def whitelist_root_role_remove(self, ctx: commands.Context, role: discord.Role):
+        """Quitar rol de la whitelist (unificada)"""
+        await self.whitelist_role_remove.callback(self, ctx, role)
+
     @antinuke.group(name="whitelist", aliases=["wl"], invoke_without_command=True)
     @antinuke_trusted()
     async def whitelist(self, ctx: commands.Context):
@@ -1477,17 +1677,33 @@ class Antinuke(commands.Cog):
         if not whitelist:
             return await ctx.send(embed=warning_embed("La whitelist está vacía"))
 
-        lines = []
+        user_lines = []
+        role_lines = []
         for entry in whitelist:
-            user = self.bot.get_user(entry["user_id"])
-            name = str(user) if user else f"ID: {entry['user_id']}"
-            lines.append(f"• {name}")
+            if "user_id" in entry:
+                user = self.bot.get_user(entry["user_id"])
+                mention = user.mention if user else f"<@{entry['user_id']}>"
+                user_lines.append(f"• {mention}")
+            if "role_id" in entry:
+                role = ctx.guild.get_role(entry["role_id"])
+                mention = role.mention if role else f"<@&{entry['role_id']}>"
+                role_lines.append(f"• {mention}")
 
         embed = discord.Embed(
             title="🛡️ Antinuke - Whitelist",
-            description="\n".join(lines),
             color=config.BLURPLE_COLOR
         )
+        embed.add_field(
+            name="👤 Usuarios",
+            value="\n".join(user_lines) if user_lines else "Sin usuarios en whitelist",
+            inline=False
+        )
+        embed.add_field(
+            name="🏷️ Roles",
+            value="\n".join(role_lines) if role_lines else "Sin roles en whitelist",
+            inline=False
+        )
+        embed.set_footer(text="Whitelist compartida con Antiraid")
         await ctx.send(embed=embed)
 
     @whitelist.command(name="add", aliases=["añadir"])
@@ -1506,13 +1722,14 @@ class Antinuke(commands.Cog):
         await database.antinuke_whitelist.insert_one({
             "guild_id": ctx.guild.id,
             "user_id": user.id,
+            "type": "user",
             "added_by": ctx.author.id,
             "added_at": datetime.utcnow()
         })
 
         # Actualizar caché
         if ctx.guild.id in self._whitelist_cache:
-            self._whitelist_cache[ctx.guild.id].add(user.id)
+            self._whitelist_cache[ctx.guild.id].setdefault("users", set()).add(user.id)
         await cache.delete(f"antinuke:whitelist:{ctx.guild.id}")
 
         embed = success_embed(f"**{user}** añadido a la whitelist", ctx.author)
@@ -1532,13 +1749,91 @@ class Antinuke(commands.Cog):
 
         # Actualizar caché
         if ctx.guild.id in self._whitelist_cache:
-            self._whitelist_cache[ctx.guild.id].discard(user.id)
+            self._whitelist_cache[ctx.guild.id].setdefault("users", set()).discard(user.id)
         await cache.delete(f"antinuke:whitelist:{ctx.guild.id}")
 
         embed = success_embed(f"**{user}** removido de la whitelist", ctx.author)
         await ctx.send(embed=embed)
 
+    @whitelist.group(name="role", aliases=["rol"], invoke_without_command=True)
+    @antinuke_trusted()
+    async def whitelist_role(self, ctx: commands.Context):
+        """Gestionar whitelist de roles"""
+        embed = discord.Embed(
+            title="🛡️ Antinuke - Whitelist de Roles",
+            description=(
+                f"`{ctx.clean_prefix}whitelist role add @rol` - Añadir rol\n"
+                f"`{ctx.clean_prefix}whitelist role remove @rol` - Quitar rol"
+            ),
+            color=config.BLURPLE_COLOR
+        )
+        await ctx.send(embed=embed)
+
+    @whitelist_role.command(name="add", aliases=["añadir"])
+    @antinuke_trusted()
+    async def whitelist_role_add(self, ctx: commands.Context, role: discord.Role):
+        """Añadir rol a la whitelist"""
+        exists = await database.antinuke_whitelist.find_one({
+            "guild_id": ctx.guild.id,
+            "role_id": role.id
+        })
+
+        if exists:
+            return await ctx.send(embed=error_embed(f"{role.mention} ya está en la whitelist"))
+
+        await database.antinuke_whitelist.insert_one({
+            "guild_id": ctx.guild.id,
+            "role_id": role.id,
+            "type": "role",
+            "added_by": ctx.author.id,
+            "added_at": datetime.utcnow()
+        })
+
+        if ctx.guild.id in self._whitelist_cache:
+            self._whitelist_cache[ctx.guild.id].setdefault("roles", set()).add(role.id)
+        await cache.delete(f"antinuke:whitelist:{ctx.guild.id}")
+
+        embed = success_embed(f"{role.mention} añadido a la whitelist", ctx.author)
+        await ctx.send(embed=embed)
+
+    @whitelist_role.command(name="remove", aliases=["quitar", "del"])
+    @antinuke_trusted()
+    async def whitelist_role_remove(self, ctx: commands.Context, role: discord.Role):
+        """Quitar rol de la whitelist"""
+        result = await database.antinuke_whitelist.delete_one({
+            "guild_id": ctx.guild.id,
+            "role_id": role.id
+        })
+
+        if result.deleted_count == 0:
+            return await ctx.send(embed=error_embed(f"{role.mention} no está en la whitelist"))
+
+        if ctx.guild.id in self._whitelist_cache:
+            self._whitelist_cache[ctx.guild.id].setdefault("roles", set()).discard(role.id)
+        await cache.delete(f"antinuke:whitelist:{ctx.guild.id}")
+
+        embed = success_embed(f"{role.mention} removido de la whitelist", ctx.author)
+        await ctx.send(embed=embed)
+
     # ========== Trusted ==========
+
+    @commands.group(name="trusted", aliases=["trust"], invoke_without_command=True)
+    @antinuke_trusted()
+    async def trusted_root(self, ctx: commands.Context):
+        """Ver los usuarios trusted (unificado Antinuke/Antiraid)"""
+        await self.trusted.callback(self, ctx)
+
+    @trusted_root.command(name="add", aliases=["añadir"])
+    @antinuke_trusted()
+    async def trusted_root_add(self, ctx: commands.Context, user: discord.User):
+        """Añadir usuario trusted (solo owner) — Unificado"""
+        await self.trusted_add.callback(self, ctx, user)
+
+    @trusted_root.command(name="remove", aliases=["quitar", "del"])
+    @antinuke_trusted()
+    async def trusted_root_remove(self, ctx: commands.Context, user: discord.User):
+        """Quitar usuario trusted (solo owner) — Unificado"""
+        await self.trusted_remove.callback(self, ctx, user)
 
     @antinuke.group(name="trusted", aliases=["trust"], invoke_without_command=True)
     @antinuke_trusted()
@@ -1671,13 +1966,17 @@ class Antinuke(commands.Cog):
 
         if settings.get("enabled"):
             status = "✅ Habilitado"
-            punishment = settings.get("punishment", "ban").upper()
+            global_pun = settings.get("punishment", Punishment.BAN.value)
+            if global_pun not in PUNISHMENT_VALUES:
+                global_pun = Punishment.BAN.value
+            punishment = global_pun.upper()
             log_channel = ctx.guild.get_channel(settings.get("log_channel", 0))
 
             embed.add_field(
                 name="Configuración Actual",
-                value=f"**Castigo:** {punishment}\n"
-                      f"**Canal de logs:** {log_channel.mention if log_channel else 'No configurado'}",
+                value=f"**Castigo global:** {punishment}\n"
+                      f"**Canal de logs:** {log_channel.mention if log_channel else 'No configurado'}\n"
+                      f"**Bots + cuarentena → Kick:** {'✅ Activado' if settings.get('bot_quarantine_kick', True) else '❌ Desactivado'}",
                 inline=False
             )
 
@@ -1688,10 +1987,17 @@ class Antinuke(commands.Cog):
                 action_config = settings.get("actions", {}).get(action.value, {})
                 enabled = action_config.get("enabled", False)
                 limit = action_config.get("limit", 3)
+                configured = action_config.get("punishment")
+                if configured not in PUNISHMENT_VALUES:
+                    configured = None
+                effective_pun = (configured or global_pun).upper()
+                marker = "" if configured else " (GLOBAL)"
                 if enabled:
-                    actions_enabled.append(f"✅ `{action.value}` (límite: {limit})")
+                    actions_enabled.append(
+                        f"✅ `{action.value}` (límite: {limit}, castigo: {effective_pun}{marker})"
+                    )
                 else:
-                    actions_disabled.append(f"❌ `{action.value}`")
+                    actions_disabled.append(f"❌ `{action.value}` (castigo: {effective_pun}{marker})")
 
             if actions_enabled:
                 embed.add_field(name="Protecciones Activas", value="\n".join(actions_enabled), inline=True)
@@ -1706,7 +2012,9 @@ class Antinuke(commands.Cog):
             name="Subcomandos Principales",
             value=f"`{ctx.prefix}antinuke enable` - Habilitar antinuke\n"
                   f"`{ctx.prefix}antinuke disable` - Deshabilitar antinuke\n"
-                  f"`{ctx.prefix}antinuke punishment <ban/kick/strip>` - Cambiar castigo\n"
+                  f"`{ctx.prefix}antinuke punishment <ban/kick/strip/quarantine>` - Cambiar castigo global\n"
+                  f"`{ctx.prefix}antinuke actionpunishment <acción> <ban/kick/strip/quarantine/default>` - Castigo por acción\n"
+                  f"`{ctx.prefix}antinuke botkick <on/off>` - Kick automático si el infractor es bot y el castigo es cuarentena\n"
                   f"`{ctx.prefix}antinuke logs <canal>` - Canal de logs\n"
                   f"`{ctx.prefix}antinuke all <on/off> [límite]` - Todas las protecciones",
             inline=False
@@ -1731,6 +2039,15 @@ class Antinuke(commands.Cog):
             inline=False
         )
 
+        embed.add_field(
+            name="ℹ️ Importante",
+            value=(
+                "Agrega a la **whitelist** los bots y personas que NO quieres que afecte el antinuke/antiraid.\n"
+                "La cuarentena no es fiable en bots; por eso puedes usar el kick automático."
+            ),
+            inline=False
+        )
+
         embed.set_footer(text=f"Usa {ctx.prefix}antinuke para el panel interactivo | Solo owner y trusted pueden configurar")
 
         await ctx.send(embed=embed)
@@ -1752,7 +2069,10 @@ class AntinukeSettingsView(discord.ui.View):
     def create_embed(self) -> discord.Embed:
         """Crear embed con el estado actual"""
         status = "✅ Activado" if self.settings.get("enabled") else "❌ Desactivado"
-        punishment = self.settings.get("punishment", "ban").upper()
+        global_pun_value = self.settings.get("punishment", Punishment.BAN.value)
+        if global_pun_value not in PUNISHMENT_VALUES:
+            global_pun_value = Punishment.BAN.value
+        global_punishment = global_pun_value.upper()
         log_channel = self.settings.get("log_channel")
         log_text = f"<#{log_channel}>" if log_channel else "No configurado"
 
@@ -1760,8 +2080,9 @@ class AntinukeSettingsView(discord.ui.View):
             title="🛡️ Antinuke - Configuración",
             description=(
                 f"**Estado:** {status}\n"
-                f"**Castigo:** {punishment}\n"
-                f"**Canal de logs:** {log_text}\n\n"
+                f"**Castigo global:** {global_punishment}\n"
+                f"**Canal de logs:** {log_text}\n"
+                f"**Bots + cuarentena → Kick:** {'✅ Activado' if self.settings.get('bot_quarantine_kick', True) else '❌ Desactivado'}\n\n"
                 "Usa el menú desplegable para activar/desactivar protecciones.\n"
                 "Usa los botones para cambiar otras opciones."
             ),
@@ -1774,12 +2095,28 @@ class AntinukeSettingsView(discord.ui.View):
             action_config = self.settings.get("actions", {}).get(action.value, {})
             enabled = action_config.get("enabled", False)
             limit = action_config.get("limit", 3)
+            configured = action_config.get("punishment")
+            if configured not in PUNISHMENT_VALUES:
+                configured = None
+            effective = (configured or global_pun_value).upper()
+            pun_text = effective if configured else f"GLOBAL ({effective})"
             status_emoji = "✅" if enabled else "❌"
-            actions_text.append(f"{status_emoji} `{action.value}` → Límite: **{limit}**")
+            actions_text.append(
+                f"{status_emoji} `{action.value}` → Límite: **{limit}** | Castigo: **{pun_text}**"
+            )
 
         embed.add_field(
             name="📋 Protecciones",
             value="\n".join(actions_text),
+            inline=False
+        )
+
+        embed.add_field(
+            name="ℹ️ Importante",
+            value=(
+                "Agrega a la **whitelist** los bots y personas que NO quieres que afecte el antinuke/antiraid.\n"
+                "La cuarentena no es fiable en bots; por eso puedes usar el kick automático."
+            ),
             inline=False
         )
 
@@ -1820,6 +2157,7 @@ class AntinukeSettingsView(discord.ui.View):
                 "$set": {"enabled": new_state, "guild_id": self.ctx.guild.id},
                 "$setOnInsert": {
                     "punishment": Punishment.BAN.value,
+                    "bot_quarantine_kick": True,
                     "trusted": [self.ctx.author.id],
                     "actions": self.cog.DEFAULT_SETTINGS["actions"]
                 }
@@ -1834,12 +2172,12 @@ class AntinukeSettingsView(discord.ui.View):
         await interaction.response.send_message(f"🛡️ Antinuke **{status}**", ephemeral=True)
         await self.refresh()
 
-    @discord.ui.button(label="Castigo", style=discord.ButtonStyle.secondary, emoji="⚖️", row=1)
+    @discord.ui.button(label="Castigo Global", style=discord.ButtonStyle.secondary, emoji="⚖️", row=2)
     async def change_punishment(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Cambiar castigo"""
         view = PunishmentView(self)
         await interaction.response.send_message(
-            "**Selecciona el castigo para infractores:**\n\n"
+            "**Selecciona el castigo global para infractores:**\n\n"
             "🔨 **Ban** — Banear permanentemente\n"
             "👢 **Kick** — Expulsar del servidor\n"
             "📛 **Strip** — Quitar todos los roles\n"
@@ -1848,19 +2186,43 @@ class AntinukeSettingsView(discord.ui.View):
             ephemeral=True
         )
 
+    @discord.ui.button(label="Castigo por Acción", style=discord.ButtonStyle.secondary, emoji="🎯", row=2)
+    async def change_action_punishment(self, interaction: discord.Interaction, button: discord.ui.Button):
+        modal = ActionPunishmentModal(self)
+        await interaction.response.send_modal(modal)
+
+    @discord.ui.button(label="Bots: Kick si cuarentena", style=discord.ButtonStyle.secondary, emoji="🤖", row=2)
+    async def toggle_bot_quarantine_kick(self, interaction: discord.Interaction, button: discord.ui.Button):
+        new_state = not self.settings.get("bot_quarantine_kick", True)
+        await database.antinuke_servers.update_one(
+            {"guild_id": self.ctx.guild.id},
+            {"$set": {"bot_quarantine_kick": new_state}},
+            upsert=True
+        )
+
+        self.cog._settings_cache.pop(self.ctx.guild.id, None)
+        await cache.delete(f"antinuke:settings:{self.ctx.guild.id}")
+
+        status = "activado" if new_state else "desactivado"
+        await interaction.response.send_message(
+            f"🤖 Kick automático para bots en cuarentena **{status}**",
+            ephemeral=True
+        )
+        await self.refresh()
+
     @discord.ui.button(label="Canal de Logs", style=discord.ButtonStyle.secondary, emoji="📝", row=1)
     async def set_log_channel(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Configurar canal de logs"""
         modal = LogChannelModal(self)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Cambiar Límite", style=discord.ButtonStyle.secondary, emoji="🔢", row=2)
+    @discord.ui.button(label="Cambiar Límite", style=discord.ButtonStyle.secondary, emoji="🔢", row=1)
     async def change_limit(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Cambiar límite de una acción"""
         modal = LimitModal(self)
         await interaction.response.send_modal(modal)
 
-    @discord.ui.button(label="Activar Todo", style=discord.ButtonStyle.success, emoji="✅", row=2)
+    @discord.ui.button(label="Activar Todo", style=discord.ButtonStyle.success, emoji="✅", row=1)
     async def enable_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Activar todas las protecciones"""
         updates = {}
@@ -1878,7 +2240,7 @@ class AntinukeSettingsView(discord.ui.View):
         await interaction.response.send_message("✅ Todas las protecciones activadas", ephemeral=True)
         await self.refresh()
 
-    @discord.ui.button(label="Desactivar Todo", style=discord.ButtonStyle.danger, emoji="❌", row=2)
+    @discord.ui.button(label="Desactivar Todo", style=discord.ButtonStyle.danger, emoji="❌", row=1)
     async def disable_all(self, interaction: discord.Interaction, button: discord.ui.Button):
         """Desactivar todas las protecciones"""
         updates = {}
@@ -1995,7 +2357,7 @@ class PunishmentSelect(discord.ui.Select):
         ]
 
         super().__init__(
-            placeholder="Selecciona el castigo...",
+            placeholder="Selecciona el castigo global...",
             options=options,
             min_values=1,
             max_values=1
@@ -2153,6 +2515,91 @@ class LimitModal(discord.ui.Modal, title="Cambiar Límite"):
             f"🔢 Límite de **{action_name}** establecido en **{limit_value}**", 
             ephemeral=True
         )
+        await self.parent_view.refresh()
+
+
+class ActionPunishmentModal(discord.ui.Modal, title="Castigo por Acción"):
+    """Modal para cambiar el castigo de una acción específica"""
+
+    action = discord.ui.TextInput(
+        label="Nombre de la acción",
+        placeholder="ban_members, create_channels, mention_everyone, add_bot...",
+        required=True
+    )
+
+    punishment = discord.ui.TextInput(
+        label="Castigo (ban/kick/strip/quarantine/default)",
+        placeholder="kick",
+        required=True
+    )
+
+    def __init__(self, view: AntinukeSettingsView):
+        super().__init__()
+        self.parent_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        action_name = self.action.value.lower().strip()
+        value = self.punishment.value.lower().strip()
+
+        valid_actions = [a.value for a in AntinukeAction]
+        if action_name not in valid_actions:
+            return await interaction.response.send_message(
+                f"❌ Acción inválida. Opciones: {', '.join(valid_actions)}",
+                ephemeral=True
+            )
+
+        allowed = set(PUNISHMENT_VALUES) | {"default", "global"}
+        if value not in allowed:
+            return await interaction.response.send_message(
+                "❌ Castigo inválido. Usa: ban/kick/strip/quarantine/default",
+                ephemeral=True
+            )
+
+        if value == "global":
+            value = "default"
+
+        if value == "quarantine":
+            settings = await self.parent_view.cog.get_settings(self.parent_view.ctx.guild.id)
+            if not settings.get("quarantine_role"):
+                return await interaction.response.send_message(
+                    "⚠️ Primero configura el sistema de cuarentena:\n"
+                    f"`{self.parent_view.ctx.clean_prefix}antinuke setroles quarantine`",
+                    ephemeral=True
+                )
+
+        current_settings = await self.parent_view.cog.get_settings(self.parent_view.ctx.guild.id)
+        merged_actions = copy.deepcopy(self.parent_view.cog.DEFAULT_SETTINGS["actions"])
+        current_actions = current_settings.get("actions", {}) or {}
+
+        for a in AntinukeAction:
+            if isinstance(current_actions.get(a.value), dict):
+                merged_actions[a.value].update(current_actions[a.value])
+
+        if value == "default":
+            merged_actions[action_name]["punishment"] = None
+        else:
+            merged_actions[action_name]["punishment"] = value
+
+        await database.antinuke_servers.update_one(
+            {"guild_id": self.parent_view.ctx.guild.id},
+            {"$set": {"actions": merged_actions}},
+            upsert=True
+        )
+
+        self.parent_view.cog._settings_cache.pop(self.parent_view.ctx.guild.id, None)
+        await cache.delete(f"antinuke:settings:{self.parent_view.ctx.guild.id}")
+
+        if value == "default":
+            await interaction.response.send_message(
+                f"🎯 Castigo de **{action_name}** restablecido a **GLOBAL**",
+                ephemeral=True
+            )
+        else:
+            await interaction.response.send_message(
+                f"🎯 Castigo de **{action_name}** establecido en **{value.upper()}**",
+                ephemeral=True
+            )
+
         await self.parent_view.refresh()
 
 
