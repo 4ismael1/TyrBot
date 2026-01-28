@@ -674,9 +674,7 @@ class Moderation(commands.Cog):
         case_id = await self.create_case(
             ctx.guild.id, ctx.author.id, user.id, "note", content
         )
-        
-        embed = success_embed(f"📝 Nota añadida a **{user}** | Caso #{case_id}")
-        embed.add_field(name="Contenido", value=content[:1000])
+        embed = success_embed(f"`Caso #{case_id}` {user} recibió una nota.")
         await ctx.send(embed=embed)
     
     # ========== Comandos de Kick/Ban ==========
@@ -728,9 +726,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "kick", ctx.author, member, reason, case_id)
-        
-        embed = success_embed(f"👢 **{member}** ha sido expulsado | Caso #{case_id}")
-        embed.add_field(name="Razón", value=reason)
+        embed = success_embed(f"`Caso #{case_id}` {member} ha sido expulsado.")
         await ctx.send(embed=embed)
     
     @commands.command(
@@ -782,9 +778,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "ban", ctx.author, user, reason, case_id)
-        
-        embed = success_embed(f"🔨 **{user}** ha sido baneado | Caso #{case_id}")
-        embed.add_field(name="Razón", value=reason)
+        embed = success_embed(f"`Caso #{case_id}` {user} ha sido baneado.")
         await ctx.send(embed=embed)
     
     @commands.command(
@@ -816,8 +810,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "unban", ctx.author, user, reason, case_id)
-        
-        embed = success_embed(f"✅ **{user}** ha sido desbaneado | Caso #{case_id}")
+        embed = success_embed(f"`Caso #{case_id}` {user} ha sido desbaneado.")
         await ctx.send(embed=embed)
     
     @commands.command(
@@ -854,8 +847,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "softban", ctx.author, member, reason, case_id)
-        
-        embed = success_embed(f"🔄 **{member}** ha sido softbaneado | Caso #{case_id}")
+        embed = success_embed(f"`Caso #{case_id}` {member} ha sido softbaneado.")
         await ctx.send(embed=embed)
     
     # ========== Timeout/Mute ==========
@@ -906,9 +898,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "timeout", ctx.author, member, reason, case_id, format_time(seconds))
-        
-        embed = success_embed(f"🔇 **{member}** silenciado por **{format_time(seconds)}** | Caso #{case_id}")
-        embed.add_field(name="Razón", value=reason)
+        embed = success_embed(f"`Caso #{case_id}` {member} ha sido silenciado.")
         await ctx.send(embed=embed)
         
         # DM
@@ -951,8 +941,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "untimeout", ctx.author, member, reason, case_id)
-        
-        embed = success_embed(f"🔊 Timeout removido de **{member}** | Caso #{case_id}")
+        embed = success_embed(f"`Caso #{case_id}` {member} ya no tiene timeout.")
         await ctx.send(embed=embed)
     
     # ========== Quarantine ==========
@@ -1044,8 +1033,7 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "quarantine", ctx.author, member, reason, case_id)
-        
-        embed = success_embed(f"🔒 **{member}** puesto en cuarentena | Caso #{case_id}")
+        embed = success_embed(f"`Caso #{case_id}` {member} ha sido puesto en cuarentena.")
         await ctx.send(embed=embed)
         
         # Intentar enviar DM
@@ -1132,11 +1120,8 @@ class Moderation(commands.Cog):
         )
         
         await self.send_mod_log(ctx.guild, "unquarantine", ctx.author, member, reason, case_id)
-        
-        embed = success_embed(
-            f"🔓 **{member}** removido de cuarentena | Caso #{case_id}\n"
-            f"Se restauraron **{roles_restored}** roles"
-        )
+
+        embed = success_embed(f"`Caso #{case_id}` {member} ya no está en cuarentena.")
         await ctx.send(embed=embed)
         
         # Intentar enviar DM
@@ -1259,10 +1244,7 @@ class Moderation(commands.Cog):
         })
         
         await self.send_mod_log(ctx.guild, "warn", ctx.author, member, reason, case_id)
-        
-        embed = success_embed(f"⚠️ **{member}** ha sido advertido | Caso #{case_id}")
-        embed.add_field(name="Razón", value=reason)
-        embed.add_field(name="Advertencias totales", value=str(warn_count))
+        embed = success_embed(f"`Caso #{case_id}` {member} ha sido advertido.")
         await ctx.send(embed=embed)
         
         # DM
