@@ -371,7 +371,8 @@ class CustomHelp(commands.HelpCommand):
             name="✅ Nota importante",
             value=(
                 "Agrega a **whitelist** los bots, roles y usuarios que no quieres que el bot afecte.\n"
-                "Usa **trusted** para permitir que alguien configure Antinuke y Antiraid."
+                "Usa **trusted** para permitir que alguien configure Antinuke y Antiraid.\n"
+                f"Si no tienes licencia, canjea con: `{ctx.clean_prefix}license redeem <key>`"
             ),
             inline=False
         )
