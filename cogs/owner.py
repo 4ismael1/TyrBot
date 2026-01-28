@@ -131,6 +131,51 @@ class Owner(commands.Cog):
                 embeds.append(embed)
 
         await paginate(ctx, embeds)
+
+    @commands.command(
+        name="helpv2",
+        extras={"hidden": True}
+    )
+    async def owner_help_v2(self, ctx: commands.Context, *, command: str = None):
+        """Help completo sin filtros (solo owner)"""
+        from cogs.help import CustomHelp, COG_CATEGORIES
+
+        class OwnerHelpAll(CustomHelp):
+            def _is_hidden_command(self, command_obj: commands.Command) -> bool:
+                return False
+            
+            def _organize_cogs_by_category(self) -> dict[str, list]:
+                bot = self.context.bot
+                categories: dict[str, list] = {}
+                used_cogs = set()
+
+                # Mantener el orden de categorias original
+                for category_name, cog_names in COG_CATEGORIES.items():
+                    cogs_in_category = []
+                    for cog_name in cog_names:
+                        cog = bot.get_cog(cog_name)
+                        if cog:
+                            cmds = list(cog.walk_commands())
+                            if cmds:
+                                cogs_in_category.append(cog)
+                                used_cogs.add(cog_name)
+                    if cogs_in_category:
+                        categories[category_name] = sorted(cogs_in_category, key=lambda c: c.qualified_name)
+
+                # Agregar cualquier cog fuera del listado
+                other_cogs = []
+                for cog in bot.cogs.values():
+                    if cog.qualified_name in used_cogs:
+                        continue
+                    if list(cog.walk_commands()):
+                        other_cogs.append(cog)
+                if other_cogs:
+                    categories["📁 Otros"] = sorted(other_cogs, key=lambda c: c.qualified_name)
+
+                return categories
+
+        help_cmd = OwnerHelpAll()
+        await help_cmd.command_callback(ctx, command=command)
     
     @commands.command(name="eval", aliases=["ev", "exec"])
     async def _eval(self, ctx: commands.Context, *, code: str):
