@@ -257,67 +257,112 @@ class Licensing(commands.Cog):
         if not docs:
             return await ctx.send(embed=warning_embed("No hay licencias para mostrar."))
 
-        status_title = {
-            "all": "todas",
-            "active": "activas",
-            "unused": "sin canjear",
-            "revoked": "revocadas",
-        }.get(status, status)
-
-        counts = {"active": 0, "unused": 0, "revoked": 0}
-        entries = []
+        # Separar por estado para mostrar como paneles
+        active_docs = []
+        unused_docs = []
+        revoked_docs = []
         for doc in docs:
-            key = doc.get("key", "N/A")
-            guild_id = doc.get("guild_id")
-            state = doc.get("status", "active")
-
-            if state == "revoked":
-                counts["revoked"] += 1
-                tag = "[REVOCADA]"
-            elif guild_id:
-                counts["active"] += 1
-                tag = "[ACTIVA]"
+            if doc.get("status") == "revoked":
+                revoked_docs.append(doc)
+            elif doc.get("guild_id"):
+                active_docs.append(doc)
             else:
-                counts["unused"] += 1
-                tag = "[SIN CANJEAR]"
+                unused_docs.append(doc)
 
-            guild_text = None
-            if guild_id:
-                guild = self.bot.get_guild(guild_id)
-                guild_text = f"{guild.name} ({guild_id})" if guild else str(guild_id)
-
-            details = []
-            if state == "revoked":
-                details.append(f"Revocada: {_format_dt(doc.get("revoked_at"))}")
-                if guild_text:
-                    details.append(f"Servidor: {guild_text}")
-                details.append(f"Creada: {_format_dt(doc.get("created_at"))}")
-            elif guild_id:
-                details.append(f"Servidor: {guild_text}")
-                details.append(f"Canjeada: {_format_dt(doc.get("redeemed_at"))}")
-                details.append(f"Creada: {_format_dt(doc.get("created_at"))}")
-            else:
-                details.append(f"Creada: {_format_dt(doc.get("created_at"))}")
-
-            entries.append(f"`{key}` {tag}\n" + " | ".join(details))
-
+        counts = {
+            "active": len(active_docs),
+            "unused": len(unused_docs),
+            "revoked": len(revoked_docs),
+        }
         total = sum(counts.values())
-        summary = (
-            f"Total: **{total}** | Activas: **{counts['active']}** | "
-            f"Sin canjear: **{counts['unused']}** | Revocadas: **{counts['revoked']}**"
-        )
-        info = f"Filtro: **{status_title}** | Mostrando: **{len(docs)}** (max {limit})"
 
-        embeds = []
-        page_size = 6
-        for i in range(0, len(entries), page_size):
-            chunk = entries[i:i + page_size]
-            embed = discord.Embed(
-                title=f"Licencias ({status_title})",
-                description=f"{summary}\n{info}\n\n" + "\n\n".join(chunk),
-                color=config.BLURPLE_COLOR
-            )
-            embeds.append(embed)
+        def _guild_text(guild_id: Optional[int]) -> Optional[str]:
+            if not guild_id:
+                return None
+            guild = self.bot.get_guild(guild_id)
+            return f"{guild.name} ({guild_id})" if guild else str(guild_id)
+
+        def _lines_active(items: list[dict]) -> list[str]:
+            lines = []
+            for doc in items:
+                key = doc.get("key", "N/A")
+                guild_text = _guild_text(doc.get("guild_id"))
+                canjeada = _format_dt(doc.get("redeemed_at"))
+                creada = _format_dt(doc.get("created_at"))
+                parts = [
+                    f"Servidor: {guild_text}",
+                    f"Canjeada: {canjeada}",
+                    f"Creada: {creada}",
+                ]
+                lines.append(f"`{key}` | " + " | ".join(parts))
+            return lines
+
+        def _lines_unused(items: list[dict]) -> list[str]:
+            lines = []
+            for doc in items:
+                key = doc.get("key", "N/A")
+                creada = _format_dt(doc.get("created_at"))
+                lines.append(f"`{key}` | Creada: {creada}")
+            return lines
+
+        def _lines_revoked(items: list[dict]) -> list[str]:
+            lines = []
+            for doc in items:
+                key = doc.get("key", "N/A")
+                guild_text = _guild_text(doc.get("guild_id"))
+                revocada = _format_dt(doc.get("revoked_at"))
+                creada = _format_dt(doc.get("created_at"))
+                parts = [f"Revocada: {revocada}"]
+                if guild_text:
+                    parts.append(f"Servidor: {guild_text}")
+                parts.append(f"Creada: {creada}")
+                lines.append(f"`{key}` | " + " | ".join(parts))
+            return lines
+
+        def _build_embeds(title: str, lines: list[str], show_summary: bool = True) -> list[discord.Embed]:
+            if not lines:
+                embed = discord.Embed(
+                    title=title,
+                    description="No hay licencias para mostrar.",
+                    color=config.BLURPLE_COLOR
+                )
+                return [embed]
+
+            header = []
+            if show_summary:
+                header.append(
+                    f"Total: **{total}** | Activas: **{counts['active']}** | "
+                    f"Sin canjear: **{counts['unused']}** | Revocadas: **{counts['revoked']}**"
+                )
+                header.append(f"Mostrando: **{len(lines)}** (max {limit})")
+
+            embeds = []
+            page_size = 8
+            for i in range(0, len(lines), page_size):
+                chunk = lines[i:i + page_size]
+                description = ""
+                if header:
+                    description = "\n".join(header) + "\n\n"
+                description += "\n".join(chunk)
+                embed = discord.Embed(
+                    title=title,
+                    description=description,
+                    color=config.BLURPLE_COLOR
+                )
+                embeds.append(embed)
+            return embeds
+
+        embeds: list[discord.Embed] = []
+        if status == "active":
+            embeds = _build_embeds("Panel de licencias: Activas", _lines_active(active_docs), show_summary=False)
+        elif status == "unused":
+            embeds = _build_embeds("Panel de licencias: Sin canjear", _lines_unused(unused_docs), show_summary=False)
+        elif status == "revoked":
+            embeds = _build_embeds("Panel de licencias: Revocadas", _lines_revoked(revoked_docs), show_summary=False)
+        else:
+            embeds.extend(_build_embeds("Panel de licencias: Activas", _lines_active(active_docs)))
+            embeds.extend(_build_embeds("Panel de licencias: Sin canjear", _lines_unused(unused_docs)))
+            embeds.extend(_build_embeds("Panel de licencias: Revocadas", _lines_revoked(revoked_docs)))
 
         await paginate(ctx, embeds)
 
