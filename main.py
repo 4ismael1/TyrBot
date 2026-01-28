@@ -23,7 +23,6 @@ from colorama import Fore, init as colorama_init
 from config import config
 from core.database import database
 from core.cache import cache
-from core.licenses import license_manager
 
 # Inicializar colorama para Windows
 colorama_init()
@@ -72,14 +71,6 @@ class TyrBot(commands.AutoShardedBot):
         # Referencias a database y cache
         self.db = database
         self.cache = cache
-        self.license_manager = license_manager
-
-        # Licencias: comandos/cogs permitidos sin licencia
-        self.allowed_no_license_commands = {"help", "license"}
-        self.allowed_no_license_cogs = {"Help", "Licensing"}
-
-        # Check global de licencias
-        self.add_check(self._license_check)
         
         # Cooldown global
         self.global_cooldown = commands.CooldownMapping.from_cooldown(
@@ -125,57 +116,6 @@ class TyrBot(commands.AutoShardedBot):
         self._prefix_cache[guild_id] = prefix
         
         return commands.when_mentioned_or(prefix)(self, message)
-
-    async def _license_check(self, ctx: commands.Context) -> bool:
-        """Bloquear comandos si el servidor no tiene licencia"""
-        if ctx.guild is None:
-            return True
-
-        if ctx.author.id in self.owner_ids:
-            return True
-
-        if ctx.command is None:
-            return True
-
-        root = ctx.command.root_parent.name if ctx.command.root_parent else ctx.command.name
-        if root in self.allowed_no_license_commands:
-            return True
-
-        if ctx.cog and ctx.cog.qualified_name in self.allowed_no_license_cogs:
-            return True
-
-        licensed = await self.license_manager.is_licensed(ctx.guild.id)
-        if licensed:
-            return True
-
-        embed = discord.Embed(
-            title="🔒 Licencia requerida",
-            description=(
-                "Este servidor no tiene una licencia activa para usar el bot.\n"
-                "Para continuar, canjea una licencia o contacta al desarrollador."
-            ),
-            color=config.ERROR_COLOR
-        )
-        embed.add_field(
-            name="✅ Canjear licencia",
-            value=f"`{ctx.clean_prefix}license redeem <key>`",
-            inline=False
-        )
-        embed.add_field(
-            name="ℹ️ Estado",
-            value=f"`{ctx.clean_prefix}license status`",
-            inline=False
-        )
-        embed.add_field(
-            name="📬 Contacto",
-            value="Ismael (Discord: 4.hz)",
-            inline=False
-        )
-        try:
-            await ctx.send(embed=embed, delete_after=10)
-        except discord.HTTPException:
-            pass
-        raise commands.CheckFailure("LICENSE_REQUIRED")
     
     async def setup_hook(self) -> None:
         """Configuración inicial del bot"""
@@ -383,8 +323,6 @@ class TyrBot(commands.AutoShardedBot):
         
         # Errores de checks
         if isinstance(error, commands.CheckFailure):
-            if str(error) == "LICENSE_REQUIRED":
-                return
             embed = discord.Embed(
                 description="❌ No tienes permiso para usar este comando",
                 color=config.ERROR_COLOR

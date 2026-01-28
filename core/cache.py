@@ -39,14 +39,12 @@ class RedisCache:
     PREFIX_COOLDOWN = "cooldown:"
     PREFIX_VOICEMASTER = "vm:"
     PREFIX_WELCOME = "welcome:"
-    PREFIX_LICENSE = "license:"
     
     # TTL por defecto (en segundos)
     DEFAULT_TTL = 3600  # 1 hora
     PREFIX_TTL = 86400  # 24 horas
     AFK_TTL = 604800  # 7 días
     COOLDOWN_TTL = 60  # 1 minuto
-    LICENSE_TTL = 1800  # 30 minutos
     
     def __new__(cls) -> RedisCache:
         if cls._instance is None:
@@ -228,31 +226,6 @@ class RedisCache:
         """Establecer whitelist antinuke (usuarios y roles)"""
         key = f"{self.PREFIX_ANTINUKE}whitelist:{guild_id}"
         return await self.set_json(key, whitelist, self.DEFAULT_TTL)
-
-    # ========== Operaciones de Licencias ==========
-
-    async def get_license_status(self, guild_id: int) -> Optional[bool]:
-        """Obtener estado de licencia de un servidor"""
-        key = f"{self.PREFIX_LICENSE}{guild_id}"
-        value = await self.get(key)
-        if value is None:
-            return None
-        if value in ("1", "true", "True", "yes"):
-            return True
-        if value in ("0", "false", "False", "no"):
-            return False
-        return None
-
-    async def set_license_status(self, guild_id: int, status: bool, ttl: Optional[int] = None) -> bool:
-        """Establecer estado de licencia de un servidor"""
-        key = f"{self.PREFIX_LICENSE}{guild_id}"
-        value = "1" if status else "0"
-        return await self.set(key, value, ttl or self.LICENSE_TTL)
-
-    async def delete_license_status(self, guild_id: int) -> bool:
-        """Eliminar estado de licencia de un servidor"""
-        key = f"{self.PREFIX_LICENSE}{guild_id}"
-        return await self.delete(key)
     
     async def increment_action_count(
         self, 
